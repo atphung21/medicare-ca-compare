@@ -51,7 +51,8 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
   await writeFile(path.join(dir, "request.json"), JSON.stringify(input, null, 2));
 
   const headless = process.env.PLAYWRIGHT_HEADLESS !== "false";
-  const { chromium } = await import("playwright");
+  const playwrightPackage = process.env.PLAYWRIGHT_PACKAGE || ["play", "wright"].join("");
+  const { chromium } = await import(playwrightPackage);
   if (proofBrowser) await proofBrowser.close().catch(() => undefined);
   const browser = await chromium.launch({ headless });
   proofBrowser = browser;
