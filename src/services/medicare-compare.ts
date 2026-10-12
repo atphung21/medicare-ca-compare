@@ -2,13 +2,15 @@ import type {
   CompareRequest,
   DrugInput,
   DrugPlanBreakdown,
+  LisLevel,
   MedicarePlanComparison,
   NetworkStatus,
   PharmacyInput,
   PharmacyPlanQuote,
 } from "@/schemas/medicare";
+import { lisSchedule, partDCap } from "@/services/lis";
 
-const PART_D_CAP = 2100;
+export { partDCap };
 
 interface BasePlan {
   contractId: string;
@@ -20,6 +22,7 @@ interface BasePlan {
   starRating: number;
   monthlyPremium: number;
   annualDrugDeductible: number;
+  californiaBenchmark: boolean;
 }
 
 const BASE_PLANS: BasePlan[] = [
@@ -33,6 +36,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 4.5,
     monthlyPremium: 0,
     annualDrugDeductible: 0,
+    californiaBenchmark: false,
   },
   {
     contractId: "H0543",
@@ -44,6 +48,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 4,
     monthlyPremium: 0,
     annualDrugDeductible: 250,
+    californiaBenchmark: false,
   },
   {
     contractId: "H3815",
@@ -55,6 +60,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 4,
     monthlyPremium: 0,
     annualDrugDeductible: 0,
+    californiaBenchmark: false,
   },
   {
     contractId: "S4802",
@@ -66,6 +72,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 12.4,
     annualDrugDeductible: 590,
+    californiaBenchmark: true,
   },
   {
     contractId: "S5601",
@@ -77,6 +84,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 38.9,
     annualDrugDeductible: 200,
+    californiaBenchmark: false,
   },
   {
     contractId: "S5884",
@@ -88,6 +96,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 46.2,
     annualDrugDeductible: 545,
+    californiaBenchmark: false,
   },
 ];
 
@@ -145,6 +154,16 @@ function drugProfile(drug: DrugInput, carrierName: string) {
   const mailFactor = months === 3 ? 2.45 : 1;
   const retailPerFill = round(retailMonth * mailFactor);
 
+  if (name.includes("doxycycline") && carrierName.includes("Wellcare")) {
+    if (drug.dosageForm === "CAPSULE") {
+      tier = 1;
+      retailMonth = 14;
+    } else if (drug.dosageForm === "TABLET") {
+      tier = 3;
+      retailMonth = 175;
+    }
+  }
+
   const uncovered =
     (carrierName.includes("Humana") && tier === 5) ||
     (carrierName.includes("Alignment") && drug.dosageForm === "INHALER");
@@ -176,21 +195,28 @@ function quotePharmacy(
   plan: BasePlan,
   pharmacy: PharmacyInput,
   medications: DrugInput[],
+  cap: number,
+  lis: ReturnType<typeof lisSchedule>,
 ): PharmacyPlanQuote {
   const networkStatus = networkFor(plan.carrierName, pharmacy);
-  let deductibleLeft = plan.annualDrugDeductible;
+  let deductibleLeft = lis ? 0 : plan.annualDrugDeductible;
   let annualDrug = 0;
+  let januaryDrug = 0;
   const drugBreakdowns: DrugPlanBreakdown[] = medications.map((drug) => {
     const profile = drugProfile(drug, plan.carrierName);
+    const label = drug.dosageFormLabel ?? drug.resolvedName ?? null;
     if (!profile.covered || networkStatus === "OUT_OF_NETWORK") {
       const uncoveredAnnual = profile.covered ? round(profile.retailPerFill * profile.fillsPerYear) : 0;
       annualDrug += uncoveredAnnual;
+      januaryDrug += profile.covered ? round(profile.retailPerFill) : 0;
       return {
         drugId: drug.id,
-        drugName: drug.name,
+        drugName: drug.resolvedName || drug.name,
+        rxcui: drug.rxcui ?? null,
+        dosageFormLabel: label,
         coveredOnFormulary: profile.covered && networkStatus !== "OUT_OF_NETWORK",
         tier: profile.covered ? profile.tier : null,
-        deductibleApplies: profile.deductibleApplies,
+        deductibleApplies: lis ? false : profile.deductibleApplies,
         negotiatedRetailMonthlyCost: round(profile.retailPerFill / (drug.refillFrequencyMonths === "3" ? 3 : 1)),
         initialCoverageMonthlyCopay: profile.covered ? round(uncoveredAnnual / 12) : 0,
         annualOutOfPocketForDrug: uncoveredAnnual,
@@ -201,13 +227,19 @@ function quotePharmacy(
       };
     }
 
-    const memberPerFill = Math.min(profile.retailPerFill, shareFor(profile.tier, profile.retailPerFill, networkStatus));
+    let memberPerFill = Math.min(profile.retailPerFill, shareFor(profile.tier, profile.retailPerFill, networkStatus));
+    if (pharmacy.isMailOrder && profile.tier <= 2) memberPerFill = Math.max(memberPerFill, 2);
+    if (pharmacy.isMailOrder && profile.tier >= 3) memberPerFill = round(memberPerFill * 0.8);
+    if (lis) {
+      const generic = profile.tier <= 2 || profile.usedGeneric;
+      memberPerFill = Math.min(memberPerFill, generic ? lis.genericCopay : lis.brandCopay);
+    }
     let paid = 0;
     for (let fill = 0; fill < profile.fillsPerYear; fill += 1) {
-      const room = PART_D_CAP - (annualDrug + paid);
+      const room = cap - (annualDrug + paid);
       if (room <= 0) break;
       let thisFill = memberPerFill;
-      if (profile.deductibleApplies && deductibleLeft > 0) {
+      if (!lis && profile.deductibleApplies && deductibleLeft > 0) {
         const toward = Math.min(deductibleLeft, profile.retailPerFill);
         deductibleLeft -= toward;
         thisFill = Math.max(thisFill, toward);
@@ -217,13 +249,16 @@ function quotePharmacy(
     }
     paid = round(paid);
     annualDrug += paid;
+    januaryDrug += round(Math.min(memberPerFill, cap));
     const months = drug.refillFrequencyMonths === "3" ? 3 : 1;
     return {
       drugId: drug.id,
-      drugName: drug.name,
+      drugName: drug.resolvedName || drug.name,
+      rxcui: drug.rxcui ?? null,
+      dosageFormLabel: label,
       coveredOnFormulary: true,
       tier: profile.tier,
-      deductibleApplies: profile.deductibleApplies,
+      deductibleApplies: lis ? false : profile.deductibleApplies,
       negotiatedRetailMonthlyCost: round(profile.retailPerFill / months),
       initialCoverageMonthlyCopay: round(memberPerFill / months),
       annualOutOfPocketForDrug: paid,
@@ -234,14 +269,17 @@ function quotePharmacy(
     };
   });
 
-  annualDrug = round(Math.min(annualDrug, PART_D_CAP));
+  annualDrug = round(Math.min(annualDrug, cap));
+  januaryDrug = round(Math.min(januaryDrug, cap));
   const premiumAnnual = round(plan.monthlyPremium * 12);
-  const hitsCap = annualDrug >= PART_D_CAP;
+  const hitsCap = annualDrug >= cap;
   return {
     pharmacyId: pharmacy.id,
     pharmacyName: pharmacy.name,
     networkStatus,
     annualDrugCostOop: annualDrug,
+    januaryDrugCost: januaryDrug,
+    mpppMonthlyEstimate: round(annualDrug / 12),
     totalAnnualCost: round(premiumAnnual + annualDrug),
     hitsCatastrophicCap: hitsCap,
     monthCatastrophicReached: hitsCap ? "Before year end" : null,
@@ -249,16 +287,63 @@ function quotePharmacy(
   };
 }
 
+export function expandMedications(medications: DrugInput[]) {
+  return medications.flatMap((drug) => {
+    if (!drug.compareBothForms || !drug.alternate) return [drug];
+    return [
+      drug,
+      {
+        ...drug,
+        id: `${drug.id}-alt`,
+        dosageForm: drug.alternate.coarseForm,
+        dosageFormLabel: drug.alternate.dosageForm,
+        rxcui: drug.alternate.rxcui,
+        resolvedName: drug.alternate.fullName,
+        isBrand: drug.alternate.isBrand,
+        compareBothForms: false,
+        alternate: undefined,
+      },
+    ];
+  });
+}
+
 export function compareCaliforniaPlans(payload: CompareRequest): MedicarePlanComparison[] {
   const retailCount = payload.pharmacies.filter((pharmacy) => !pharmacy.isMailOrder).length;
   if (retailCount > 5) {
     throw new Error("Select at most five retail pharmacies.");
   }
-  return BASE_PLANS.map((plan) => ({
-    ...plan,
-    sample: true as const,
-    pharmacyQuotes: payload.pharmacies.map((pharmacy) => quotePharmacy(plan, pharmacy, payload.medications)),
-  }));
+  const medications = expandMedications(payload.medications);
+  const cap = partDCap(payload.contractYear);
+  const lis = lisSchedule(payload.contractYear, payload.lisLevel as LisLevel);
+  const benchmark = BASE_PLANS.find((plan) => plan.californiaBenchmark)?.monthlyPremium ?? 0;
+  return BASE_PLANS.map((plan) => {
+    const priced = { ...plan };
+    let premiumNote: string | null = null;
+    if (lis && plan.planType === "PDP") {
+      priced.monthlyPremium = round(Math.max(0, plan.monthlyPremium - benchmark));
+      priced.annualDrugDeductible = 0;
+      premiumNote = plan.californiaBenchmark
+        ? "Sample California benchmark PDP. Extra Help shows a $0 premium in this estimate."
+        : "Extra Help estimate: premium above the sample benchmark PDP.";
+    } else if (lis) {
+      priced.annualDrugDeductible = 0;
+      premiumNote = "Extra Help estimate: drug deductible set to $0. MAPD premium is unchanged in this sample.";
+    }
+    return {
+      contractId: priced.contractId,
+      planId: priced.planId,
+      segmentId: priced.segmentId,
+      planName: priced.planName,
+      carrierName: priced.carrierName,
+      planType: priced.planType,
+      starRating: priced.starRating,
+      monthlyPremium: priced.monthlyPremium,
+      annualDrugDeductible: priced.annualDrugDeductible,
+      premiumNote,
+      sample: true as const,
+      pharmacyQuotes: payload.pharmacies.map((pharmacy) => quotePharmacy(priced, pharmacy, medications, cap, lis)),
+    };
+  });
 }
 
 function round(value: number) {

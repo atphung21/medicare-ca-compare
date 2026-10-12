@@ -1,4 +1,5 @@
 import { CompareRequestSchema } from "@/schemas/medicare";
+import { lisSchedule, partDCap } from "@/services/lis";
 import { compareCaliforniaPlans } from "@/services/medicare-compare";
 import { NextResponse } from "next/server";
 
@@ -11,10 +12,14 @@ export async function POST(request: Request) {
   }
   try {
     const plans = compareCaliforniaPlans(parsed.data);
+    const lis = lisSchedule(parsed.data.contractYear, parsed.data.lisLevel);
     return NextResponse.json({
       sample: true,
       countyName: parsed.data.countyName,
       zipCode: parsed.data.zipCode,
+      contractYear: parsed.data.contractYear,
+      partDCap: partDCap(parsed.data.contractYear),
+      lis,
       plans,
     });
   } catch (error) {
