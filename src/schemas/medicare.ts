@@ -60,7 +60,7 @@ export const PharmacyInputSchema = z.object({
   isMailOrder: z.boolean(),
 });
 
-export const LisLevelSchema = z.enum(["NONE", "FULL", "PARTIAL"]);
+export const LisLevelSchema = z.enum(["LIS_NONE", "LIS_MEDICAID", "LIS_SSI", "LIS_MSP", "LIS_SS"]);
 export type LisLevel = z.infer<typeof LisLevelSchema>;
 
 export const CompareRequestSchema = z.object({
@@ -68,7 +68,7 @@ export const CompareRequestSchema = z.object({
   countyFips: z.string().min(5, "Choose a county"),
   countyName: z.string().min(1),
   contractYear: z.enum(["2026", "2027"]),
-  lisLevel: LisLevelSchema.default("NONE"),
+  lisLevel: LisLevelSchema.default("LIS_NONE"),
   medications: z.array(DrugInputSchema).min(1, "Add at least one medication"),
   pharmacies: z
     .array(PharmacyInputSchema)

@@ -1,4 +1,5 @@
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
+import { catalogDrug, correctDrugToken, splitMedicationSpecs, type SpellingSuggestion } from "@/services/drug-spellcheck";
 import { listRxNormVariants } from "@/services/rxnorm-resolver";
 
 export type DraftStatus = "READY" | "MISSING_STRENGTH" | "MULTIPLE_FORMS";
@@ -23,12 +24,18 @@ export interface MedicationDraft {
   id: string;
   rawLine: string;
   drugName: string;
+  originalTypedName: string;
+  wasSpellCorrected: boolean;
+  confidenceScore: number;
+  spellingSuggestions: SpellingSuggestion[];
   dailyFrequency: number;
   monthlyQuantity: number;
   status: DraftStatus;
   strengths: StagingOption[];
   forms: StagingOption[];
 }
+
+export type { SpellingSuggestion };
 
 const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; forms: { label: string; extended: boolean }[] }> = {
   metformin: {
@@ -61,9 +68,10 @@ const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; form
 
 export async function parseMedicationList(text: string): Promise<MedicationDraft[]> {
   const lines = await medicationLines(text);
+  const specs = lines.flatMap((line) => splitMedicationSpecs(line));
   const drafts: MedicationDraft[] = [];
-  for (const [index, line] of lines.entries()) {
-    drafts.push(await parseLine(line, index));
+  for (const [index, spec] of specs.entries()) {
+    drafts.push(await parseLine(spec.text, index, spec.rawLine));
   }
   return drafts;
 }
@@ -113,7 +121,7 @@ async function splitParagraphWithGemini(text: string) {
   }
 }
 
-async function parseLine(line: string, index: number): Promise<MedicationDraft> {
+async function parseLine(line: string, index: number, rawLine = line): Promise<MedicationDraft> {
   let working = line.toLowerCase();
   let dailyFrequency = 1;
   const slashFrequency = working.match(/(\d+)\s*(?:\/|per|x)\s*(?:day|d|daily)\b/i);
@@ -154,10 +162,12 @@ async function parseLine(line: string, index: number): Promise<MedicationDraft> 
     .replace(/\s+/g, " ")
     .trim();
 
-  const live = drugKey.length >= 3 ? await listRxNormVariants(drugKey) : [];
+  const spelling = await correctDrugToken(drugKey);
+  const lookupKey = spelling.lookupKey || drugKey;
+  const live = lookupKey.length >= 3 ? await listRxNormVariants(lookupKey) : [];
   const fromRxNorm = live.length > 0;
-  const variants = fromRxNorm ? live.map(toStagingVariant) : fallbackVariants(drugKey);
-  const drugName = fromRxNorm ? displayDrugName(drugKey) : fallbackName(drugKey);
+  const variants = fromRxNorm ? live.map(toStagingVariant) : fallbackVariants(lookupKey);
+  const drugName = spelling.wasSpellCorrected || catalogDrug(lookupKey) ? spelling.displayName : fromRxNorm ? displayDrugName(lookupKey) : fallbackName(lookupKey);
 
   const strengthGroups = groupBy(variants, (variant) => displayStrength(variant.strength));
   if (extractedStrength && !strengthGroups.some((group) => sameStrength(group.label, extractedStrength))) {
@@ -192,9 +202,13 @@ async function parseLine(line: string, index: number): Promise<MedicationDraft> 
   }));
 
   return {
-    id: `draft-${index}-${drugKey.replace(/\s+/g, "-") || "drug"}`,
-    rawLine: line,
+    id: `draft-${index}-${lookupKey.replace(/\s+/g, "-") || "drug"}`,
+    rawLine,
     drugName,
+    originalTypedName: spelling.originalTypedName || drugKey,
+    wasSpellCorrected: spelling.wasSpellCorrected,
+    confidenceScore: spelling.confidenceScore,
+    spellingSuggestions: spelling.suggestions,
     dailyFrequency,
     monthlyQuantity: dailyFrequency * 30,
     status: draftStatus(strengths, forms, explicitExtended || explicitCapsule || explicitTablet),
@@ -238,7 +252,14 @@ function groupBy(variants: StagingVariant[], labelFor: (variant: StagingVariant)
 }
 
 function fallbackVariants(drugKey: string): StagingVariant[] {
-  const catalog = FALLBACK_CATALOG[drugKey];
+  const individual = catalogDrug(drugKey);
+  const catalog = FALLBACK_CATALOG[drugKey] ?? (individual
+    ? {
+        name: individual.canonicalName,
+        strengths: individual.strengths,
+        forms: individual.forms.map((label) => ({ label, extended: /extended/i.test(label) })),
+      }
+    : null);
   if (!catalog) return [];
   return catalog.strengths.flatMap((strength) =>
     catalog.forms.map((form) => ({
@@ -254,7 +275,7 @@ function fallbackVariants(drugKey: string): StagingVariant[] {
 }
 
 function fallbackName(drugKey: string) {
-  return FALLBACK_CATALOG[drugKey]?.name ?? displayDrugName(drugKey);
+  return FALLBACK_CATALOG[drugKey]?.name ?? catalogDrug(drugKey)?.canonicalName ?? displayDrugName(drugKey);
 }
 
 function displayDrugName(drugKey: string) {

@@ -100,7 +100,6 @@ const BASE_PLANS: BasePlan[] = [
   },
 ];
 
-const SUBSTITUTABLE = ["lipitor", "crestor", "nexium", "flomax"];
 const BRANDS = [
   "eliquis",
   "lipitor",
@@ -131,8 +130,8 @@ function networkFor(carrierName: string, pharmacy: PharmacyInput): NetworkStatus
 
 function drugProfile(drug: DrugInput, carrierName: string) {
   const name = drug.name.toLowerCase();
-  const isBrand = BRANDS.some((brand) => name.includes(brand));
-  const canSubstitute = isBrand && drug.acceptGeneric && SUBSTITUTABLE.some((brand) => name.includes(brand));
+  const isBrand = Boolean(drug.isBrand) || BRANDS.some((brand) => name.includes(brand));
+  const canSubstitute = isBrand && Boolean(drug.acceptGeneric);
   const specialty = name.includes("humira") || name.includes("ozempic");
   const complex = drug.dosageForm === "INHALER" || drug.dosageForm === "INJECTABLE_PEN" || drug.dosageForm === "VIAL";
 

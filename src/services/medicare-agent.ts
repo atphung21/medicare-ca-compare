@@ -19,6 +19,7 @@ export type ProofCaptureResult =
       proofId: string;
       medicareGovUrl: string;
       imageFile: string;
+      images: { label: string; file: string }[];
       pdf: boolean;
       step?: WizardStep;
     }
@@ -37,6 +38,14 @@ function planFinderUrl(contractYear: "2026" | "2027") {
 
 let proofBrowser: Browser | null = null;
 
+async function loadPlaywright() {
+  // A direct import("playwright") is bundled into the Worker. A variable import()
+  // makes the Next dev server throw "expression is too dynamic".
+  const specifier = "playwright";
+  const importer = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<typeof import("playwright")>;
+  return importer(specifier);
+}
+
 export function proofDirectory(proofId: string) {
   if (!/^[0-9a-f-]{36}$/i.test(proofId)) {
     throw new Error("Unknown proof.");
@@ -51,8 +60,7 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
   await writeFile(path.join(dir, "request.json"), JSON.stringify(input, null, 2));
 
   const headless = process.env.PLAYWRIGHT_HEADLESS !== "false";
-  const playwrightPackage = process.env.PLAYWRIGHT_PACKAGE || ["play", "wright"].join("");
-  const { chromium } = await import(playwrightPackage);
+  const { chromium } = await loadPlaywright();
   if (proofBrowser) await proofBrowser.close().catch(() => undefined);
   const browser = await chromium.launch({ headless });
   proofBrowser = browser;
@@ -98,12 +106,11 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
         pdf = false;
       }
       await writeMeta(dir, page.url());
-      return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, pdf, step: "results" };
+      return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, images: [{ label: "Medigap plans", file: imageFile }], pdf, step: "results" };
     }
 
     step = "extra-help";
-    const helpPattern = input.lisLevel === "NONE" ? /i don't get help|none of these|do not get help/i : input.lisLevel === "PARTIAL" ? /extra help|partial|low.income subsidy/i : /medicaid|medi-cal|full extra help/i;
-    const helpChoice = page.getByLabel(helpPattern).or(page.locator("label").filter({ hasText: helpPattern }));
+    const helpChoice = page.locator(`input[name="helpType"][value="${input.lisLevel}"]`);
     if (!(await clickIfVisible(page, helpChoice, 10000))) {
       return await stop(page, dir, proofId, "extra-help", "The Extra Help choice was not on the page.");
     }
@@ -127,6 +134,12 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
         return await stop(page, dir, proofId, "drugs", `Could not add ${medication.name} with its resolved strength and form.`);
       }
     }
+    const lastDrug = input.medications.at(-1)?.name;
+    const drugList = lastDrug
+      ? page.getByText(lastDrug, { exact: false }).last()
+      : page.getByRole("heading", { name: /your drugs|drug list/i }).first();
+    if (await isVisible(drugList, 1500)) await drugList.scrollIntoViewIfNeeded().catch(() => undefined);
+    await saveProofShot(page, dir, "drugs.png", false);
     const finishedDrugs =
       (await clickIfVisible(page, page.getByRole("button", { name: /done adding drugs/i }), 2500)) ||
       (await clickIfVisible(page, page.getByRole("button", { name: /^continue$/i }), 5000));
@@ -142,6 +155,9 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
     if (!selected) {
       return await stop(page, dir, proofId, "pharmacies", "None of the selected pharmacies were on the page.");
     }
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await page.waitForTimeout(400);
+    await saveProofShot(page, dir, "pharmacies.png", true);
     if (!(await clickIfVisible(page, page.getByRole("button", { name: /continue to view plans|view plans|^continue$|^done$/i }), 8000))) {
       return await stop(page, dir, proofId, "pharmacies", "Continue to view plans was not on the page.");
     }
@@ -168,11 +184,10 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
       const imageFile = `${input.contractId}-${input.planId}.png`;
       await writeFile(path.join(dir, imageFile), await card.screenshot({ type: "png" }));
       await writeMeta(dir, page.url());
-      return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, pdf: false, step: "results" };
+      return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, images: proofListImages(), pdf: false, step: "results" };
     }
 
-    const imageFile = "summary.png";
-    await writeFile(path.join(dir, imageFile), await page.screenshot({ type: "png", fullPage: false }));
+    const imageFile = "drugs.png";
     let pdf = false;
     try {
       await page.pdf({ path: path.join(dir, "page.pdf"), printBackground: true });
@@ -181,7 +196,7 @@ export async function captureMedicareProof(input: ProofCaptureInput): Promise<Pr
       pdf = false;
     }
     await writeMeta(dir, page.url());
-    return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, pdf, step: "results" };
+    return { ok: true, proofId, medicareGovUrl: page.url(), imageFile, images: proofListImages(), pdf, step: "results" };
   } catch (error) {
     const message = error instanceof Error ? error.message : "The Medicare.gov wizard stopped.";
     return await stop(page, dir, proofId, step, message);
@@ -224,13 +239,13 @@ async function addMedication(page: Page, medication: DrugInput) {
   const options = page.locator(menuId ? `[id="${menuId}"] [role="option"]` : '[role="option"]');
   const token = medication.name.trim().split(/[\s/]+/).find((word) => word.length > 2) ?? medication.name.trim();
   const ready = options.filter({ hasText: new RegExp(escapeRegExp(token), "i") });
-  if (!(await isVisible(ready, 1200))) {
+  if (!(await isVisible(ready, 700))) {
     await search.fill("");
     await search.pressSequentially(medication.name, { delay: 0 });
   }
-  if (!(await isVisible(ready, 3500))) return false;
+  if (!(await isVisible(ready, 2500))) return false;
   const wantedName = compactName(medication.name);
-  const texts = (await options.allInnerTexts()).map((text) => text.trim()).slice(0, 12);
+  const texts = await options.evaluateAll((nodes) => nodes.slice(0, 12).map((node) => (node.textContent ?? "").trim()));
   let match = texts.findIndex((text) => compactName(text) === wantedName);
   if (match < 0 && !/[/-]/.test(medication.name)) match = texts.findIndex((text) => compactName(text).includes(wantedName) && !/[/-]/.test(text));
   if (match < 0) match = texts.findIndex((text) => compactName(text).includes(wantedName));
@@ -238,22 +253,56 @@ async function addMedication(page: Page, medication: DrugInput) {
   await options.nth(match).click();
   const addDrug = page.locator(".e2e-add-drug-button");
   if (!(await isVisible(addDrug, 2500))) return false;
-  await addDrug.click({ timeout: 5000 });
+  await addDrug.click({ timeout: 4000 });
+  await answerGenericPrompt(page, medication.acceptGeneric, medication.isBrand === false ? 600 : 3000);
 
   const dosage = page.locator('select[name="dosage"]');
-  if (!(await isVisible(dosage, 5000))) return false;
-  const labels = (await dosage.locator("option").allInnerTexts()).map((label) => label.trim()).filter(Boolean);
+  if (!(await isVisible(dosage, 1500))) {
+    await answerGenericPrompt(page, medication.acceptGeneric, 2000);
+  }
+  if (!(await isVisible(dosage, 4000))) return false;
+  const labels = await dosage.locator("option").evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()).filter(Boolean));
   const chosen = chooseDosageLabel(labels, medication);
   if (!chosen) return false;
   await dosage.selectOption({ label: chosen });
   const quantity = page.locator('input[name="quantity"]');
-  if (await isVisible(quantity, 400)) await quantity.fill(String(medication.quantityPerFill));
+  if (await quantity.isVisible().catch(() => false)) await quantity.fill(String(medication.quantityPerFill));
   const frequency = page.locator('select[name="frequency"]');
-  if (await isVisible(frequency, 400)) {
+  if (await frequency.isVisible().catch(() => false)) {
     const label = medication.refillFrequencyMonths === "3" ? "Every 3 months" : "Every month";
     await frequency.selectOption({ label }).catch(() => undefined);
   }
-  return clickIfVisible(page, page.getByRole("button", { name: /add to my drug list/i }), 6000);
+  const added = await clickIfVisible(page, page.getByRole("button", { name: /add to my drug list/i }), 4000);
+  if (!added) return false;
+  await answerGenericPrompt(page, medication.acceptGeneric, 400);
+  return true;
+}
+
+async function answerGenericPrompt(page: Page, acceptGeneric: boolean | undefined, timeout: number) {
+  const dialog = page.locator(".ds-c-dialog").filter({ has: page.locator(".e2e-add-generic-drug-btn") });
+  const choice = page.locator(acceptGeneric === true ? ".e2e-add-generic-drug-btn" : ".e2e-add-brand-name-drug-btn");
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const open = await dialog
+      .evaluate((node) => getComputedStyle(node).display !== "none" && node.getBoundingClientRect().width > 0)
+      .catch(() => false);
+    if (open) {
+      await choice.click({ timeout: 3000 }).catch(() => choice.click({ force: true, timeout: 3000 }));
+      await page
+        .waitForFunction(
+          () => {
+            const node = [...document.querySelectorAll(".ds-c-dialog")].find((dialog) => dialog.querySelector(".e2e-add-generic-drug-btn"));
+            if (!node) return true;
+            return getComputedStyle(node).display === "none" || node.getBoundingClientRect().width === 0;
+          },
+          undefined,
+          { timeout: 4000 },
+        )
+        .catch(() => undefined);
+      return;
+    }
+    await page.waitForTimeout(40);
+  }
 }
 
 async function confirmPharmacyLocation(page: Page, input: ProofCaptureInput) {
@@ -279,7 +328,10 @@ async function selectPharmacies(page: Page, pharmacies: PharmacyInput[]) {
   let retail = 0;
   for (const pharmacy of pharmacies) {
     if (pharmacy.isMailOrder || retail >= 5) continue;
-    if (await searchAndSelectFirst(page, name, pharmacy.chain)) retail += 1;
+    const picked = pharmacy.id.startsWith("custom-")
+      ? await searchAndSelectNamed(page, name, distance, pharmacy.name)
+      : await searchAndSelectFirst(page, name, pharmacy.chain);
+    if (picked) retail += 1;
   }
   return mailSelected || retail > 0;
 }
@@ -301,27 +353,84 @@ async function selectMailOrder(page: Page) {
   }
 }
 
-async function searchAndSelectFirst(page: Page, name: Locator, chain: string) {
+async function searchAndSelectNamed(page: Page, name: Locator, distance: Locator, query: string) {
+  const labels = (await distance.locator("option").allInnerTexts().catch(() => [] as string[])).map((label) => label.trim()).filter(Boolean);
+  const widest = [...labels].reverse().find((label) => /mile/i.test(label));
+  if (widest) await distance.selectOption({ label: widest }).catch(() => undefined);
   await name.click({ timeout: 2000 });
+  await name.fill("");
+  await name.fill(query);
+  const search = page.getByRole("button", { name: /find pharmacies|^search$/i }).first();
+  if (await search.isVisible().catch(() => false)) await search.click({ timeout: 3000 });
+  else await name.press("Enter");
+  const pattern = new RegExp(escapeRegExp(query), "i");
+  const started = Date.now();
+  while (Date.now() - started < 8000) {
+    const named = page.getByRole("checkbox", { name: pattern });
+    if (await checkMatchingBox(named)) return true;
+    const boxes = page.locator('input[type="checkbox"]:not([name="include-mail-order-pharmacy"])');
+    const count = await boxes.count();
+    for (let index = 0; index < count; index += 1) {
+      const box = boxes.nth(index);
+      const text = await box
+        .evaluate((element) => {
+          const input = element as HTMLInputElement;
+          const label = input.id ? document.querySelector(`label[for="${input.id}"]`) : input.closest("label");
+          const row = input.closest("li, tr, article") ?? label ?? input.parentElement;
+          return (row?.textContent ?? "").replace(/\s+/g, " ").trim();
+        })
+        .catch(() => "");
+      if (!pattern.test(text)) continue;
+      if (await box.isChecked().catch(() => false)) return true;
+      const id = await box.getAttribute("id");
+      if (id) await page.locator(`label[for="${id}"]`).click({ timeout: 1500 }).catch(() => undefined);
+      else await box.check({ timeout: 1500 }).catch(() => undefined);
+      if (await box.isChecked().catch(() => false)) return true;
+    }
+    await page.waitForTimeout(100);
+  }
+  return false;
+}
+
+async function checkMatchingBox(boxes: Locator) {
+  const count = await boxes.count();
+  for (let index = 0; index < count; index += 1) {
+    const box = boxes.nth(index);
+    if (!(await box.isVisible().catch(() => false))) continue;
+    if (await box.isChecked().catch(() => false)) return true;
+    const id = await box.getAttribute("id");
+    if (id) {
+      const label = box.page().locator(`label[for="${id}"]`);
+      if ((await label.count()) > 0) await label.first().click({ timeout: 1500 }).catch(() => undefined);
+      else await box.check({ timeout: 1500 }).catch(() => undefined);
+    } else {
+      await box.check({ timeout: 1500 }).catch(() => undefined);
+    }
+    if (await box.isChecked().catch(() => false)) return true;
+  }
+  return false;
+}
+
+async function searchAndSelectFirst(page: Page, name: Locator, chain: string) {
+  const boxes = page.locator('input[type="checkbox"]:not([name="include-mail-order-pharmacy"])');
+  await name.click({ timeout: 2000 });
+  await name.fill("");
   await name.fill(chain);
   await page.getByRole("button", { name: /find pharmacies|^search$/i }).first().click({ timeout: 3000 });
-  const results = page.locator("li, [role='listitem'], [role='option']").filter({ hasText: /\d+(?:\.\d+)?\s*miles\b/i });
-  const radios = page.getByRole("radio", { name: /\d+(?:\.\d+)?\s*miles\b/i });
   const started = Date.now();
   while (Date.now() - started < 5000) {
-    if (await radios.first().isVisible().catch(() => false)) {
-      await clickIfVisible(page, radios.first(), 1000);
-      return true;
-    }
-    if (await results.first().isVisible().catch(() => false)) {
-      const option = results
-        .first()
-        .getByRole("button", { name: /^add$|^select$/i })
-        .or(results.first().getByRole("radio"))
-        .or(results.first().locator("label, button, a"))
-        .first();
-      await option.click({ timeout: 2000 });
-      return true;
+    if ((await boxes.count()) >= 1) {
+      const box = boxes.nth(0);
+      const id = await box.getAttribute("id");
+      const label = id ? page.locator(`label[for="${id}"]`) : null;
+      if (label && (await label.isVisible().catch(() => false))) {
+        if (!(await box.isChecked().catch(() => false))) await label.click({ timeout: 1500 });
+        return true;
+      }
+      if (await box.isVisible().catch(() => false)) {
+        if (!(await box.isChecked().catch(() => false))) await box.check({ timeout: 1500 });
+        return true;
+      }
     }
     await page.waitForTimeout(80);
   }
@@ -370,6 +479,18 @@ async function isVisible(locator: Locator, timeout: number) {
   }
 }
 
+function proofListImages() {
+  return [
+    { label: "Added drugs", file: "drugs.png" },
+    { label: "Added pharmacies", file: "pharmacies.png" },
+  ];
+}
+
+async function saveProofShot(page: Page, dir: string, file: string, viewportOnly: boolean) {
+  const image = await page.screenshot({ type: "png", fullPage: !viewportOnly });
+  await writeFile(path.join(dir, file), image);
+}
+
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -408,7 +529,7 @@ function dosageRules(medication: DrugInput) {
   const tablet = !capsule && (medication.dosageForm === "TABLET" || /tablet/.test(medication.dosageFormLabel ?? ""));
   const required: RegExp[] = [];
   const blocked: RegExp[] = [];
-  if (extended) required.push(/extended release|24\s*hr|\ber\b/);
+  if (extended) required.push(/extended release|24\s*hr|\ber\b|\bxr\b/);
   else blocked.push(/extended release|24\s*hr/);
   if (disintegrating) required.push(/disintegrat/);
   else if (tablet) blocked.push(/disintegrat/);
