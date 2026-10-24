@@ -1,5 +1,6 @@
 import type { CheckedMedication } from "@/lib/draft-cards";
 import { LisLevelSchema, PlanCategorySchema } from "@/schemas/medicare";
+import { pullKnowledge, syncStatus } from "@/services/assistant/knowledge-sync";
 import { runAgent } from "@/services/assistant/run-agent";
 import { EMPTY_SESSION, type AssistantSession } from "@/services/assistant/session";
 import { NextResponse } from "next/server";
@@ -43,9 +44,15 @@ export async function POST(request: Request) {
   const session: AssistantSession = structuredClone(parsed.data.session ?? EMPTY_SESSION);
   try {
     const result = await runAgent(parsed.data.messages as Parameters<typeof runAgent>[0], session);
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, memory: await syncStatus() });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The assistant could not answer.";
-    return NextResponse.json({ error: message, session }, { status: 502 });
+    return NextResponse.json({ error: message, session, memory: await syncStatus() }, { status: 502 });
   }
+}
+
+/** Team memory status for the assistant page; also brings in other computers' lessons. */
+export async function GET() {
+  await pullKnowledge();
+  return NextResponse.json({ memory: await syncStatus() });
 }

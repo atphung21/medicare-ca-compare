@@ -1,40 +1,23 @@
 // Runs real-world medication lines through the smart-entry parser and checks the result.
 // Usage: npm run check:meds   (needs internet for RxNorm; Gemini is turned off so results are repeatable)
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { transpileSources } from "./lib/transpile.mjs";
 
-const root = path.resolve(import.meta.dirname, "..");
-const out = path.join(root, "node_modules", ".cache", "check-meds");
-const sources = [
+const load = await transpileSources("check-meds", [
   "lib/strength.ts",
   "lib/gemini.ts",
   "schemas/medicare.ts",
   "services/drug-spellcheck.ts",
   "services/rxnorm-resolver.ts",
   "services/med-line-normalizer.ts",
+  "services/assistant/knowledge.ts",
+  "services/assistant/knowledge-sync.ts",
   "services/assistant/memory.ts",
   "services/med-list-parser.ts",
-];
-
-for (const file of sources) {
-  const code = await readFile(path.join(root, "src", file), "utf8");
-  const { outputText } = ts.transpileModule(code, {
-    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-  });
-  const target = path.join(out, file.replace(/\.ts$/, ".mjs"));
-  const rewritten = outputText.replace(/from "@\/([^"]+)"/g, (_, spec) => {
-    const absolute = path.join(out, `${spec}.mjs`);
-    return `from "${pathToFileURL(absolute).href}"`;
-  });
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, rewritten);
-}
+]);
 
 delete process.env.GEMINI_API_KEY;
 process.env.SKIP_TAUGHT_PHRASES = "1";
-const { parseMedicationList } = await import(pathToFileURL(path.join(out, "services/med-list-parser.mjs")).href);
+const { parseMedicationList } = await load("services/med-list-parser");
 
 /**
  * name: expected drug name (case-insensitive substring)

@@ -11,7 +11,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Project map
 
 - `/` (`src/components/compare-workspace.tsx`): the comparison form. Medication paste box in `chat-drug-intake.tsx`; draft-to-medication conversion in `src/lib/draft-cards.ts`.
-- `/assistant` (`src/components/assistant-chat.tsx`): Gemini chat that runs the same services as tools. Server: `src/app/api/agent/route.ts`, then `src/services/assistant/run-agent.ts` (loop and system prompt), `tools.ts` (tool registry), `memory.ts` (`data/agent/` rules, taught phrases, `requests.md`).
+- `/assistant` (`src/components/assistant-chat.tsx`): Gemini chat that runs the same services as tools. Server: `src/app/api/agent/route.ts`, then `src/services/assistant/run-agent.ts` (loop and system prompt), `tools.ts` (tool registry), `memory.ts` (rules, taught phrases, requests), synced across computers by `knowledge-sync.ts` through the private `KNOWLEDGE_REPO`. Terminal access: `npm run knowledge -- help`.
 - Parsing: `src/services/med-line-normalizer.ts` (one line to name, strength, frequency and form hints), `med-list-parser.ts` (RxNorm lookup and drafts), `rxnorm-resolver.ts`, `drug-spellcheck.ts`, `src/lib/strength.ts`.
 - Location: `src/lib/us-location.ts` with `src/data/zip-counties.json` (built by `scripts/build-zip-counties.mjs`); `GET /api/location?zip=`.
 - Pricing: `src/services/medicare-compare.ts` (sample plans, not live prices), `lis.ts` (Extra Help, Part D cap).

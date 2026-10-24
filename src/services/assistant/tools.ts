@@ -15,7 +15,9 @@ import { captureMedicareProof } from "@/services/medicare-agent";
 import { compareSamplePlans } from "@/services/medicare-compare";
 import { therapeuticAlternatives } from "@/services/rxclass";
 import { resolveDrugDosageForms, type DrugResolutionResult } from "@/services/rxnorm-resolver";
-import { addRule, logRequest, readMemory, removeRule, setAlias } from "./memory";
+import { shortId } from "./knowledge";
+import { knowledgeSharingConfigured } from "./knowledge-sync";
+import { addRule, listKnowledge, logRequest, markRequestDone, removeRule, setAlias } from "./memory";
 import type { AssistantSession, ToolEvent } from "./session";
 
 type Args = Record<string, unknown>;
@@ -123,6 +125,13 @@ function compareRequest(session: AssistantSession): { request?: CompareRequest; 
   if (!parsed.success) return { problem: parsed.error.issues[0]?.message ?? "The comparison request is incomplete." };
   return { request: parsed.data };
 }
+
+const sharedNote = (shared: boolean) =>
+  shared
+    ? " (shared with the team)"
+    : knowledgeSharingConfigured()
+      ? " (saved on this computer; will share when online)"
+      : " (saved on this computer only)";
 
 const money = (value: number) => `$${Math.round(value).toLocaleString("en-US")}`;
 
@@ -388,43 +397,51 @@ const tools: AssistantTool[] = [
   {
     declaration: {
       name: "remember_rule",
-      description: "Save an instruction to follow in every future chat, such as a default pharmacy or how to phrase answers. Use when the user says remember, always, never, or from now on.",
+      description:
+        "Save an instruction to follow in every future chat, on every computer that shares this assistant's memory, such as a default pharmacy or how to phrase answers. Use when the user says remember, always, never, or from now on.",
       parameters: { type: "object", properties: { rule: { type: "string" } }, required: ["rule"] },
     },
     async run(args) {
-      const rules = await addRule(text(args.rule));
-      return { result: { rules }, summary: `Remembered: ${text(args.rule)}` };
+      const { value: rules, shared } = await addRule(text(args.rule));
+      return { result: { rules, shared_with_team: shared }, summary: `Remembered: ${text(args.rule)}${sharedNote(shared)}` };
     },
   },
   {
     declaration: {
       name: "list_memory",
-      description: "Show saved rules and taught medication phrases.",
+      description: "Show saved rules and taught medication phrases, with who taught each one.",
     },
     async run() {
-      const memory = await readMemory();
+      const { rules, phrases } = await listKnowledge();
       return {
-        result: { rules: memory.rules.map((rule, index) => `${index + 1}. ${rule}`), taught_phrases: memory.aliases },
-        summary: `${memory.rules.length} rules, ${Object.keys(memory.aliases).length} taught phrases`,
+        result: {
+          rules: rules.map((item, index) => `${index + 1}. ${item.text} (taught by ${item.author})`),
+          taught_phrases: phrases.map((item) => `"${item.phrase}" means "${item.text}" (taught by ${item.author})`),
+        },
+        summary: `${rules.length} rules, ${phrases.length} taught phrases`,
       };
     },
   },
   {
     declaration: {
       name: "forget_rule",
-      description: "Delete a saved rule by its number from list_memory or by words it contains.",
+      description: "Delete a saved rule by its number from list_memory or by words it contains. It is removed on every computer.",
       parameters: { type: "object", properties: { match: { type: "string" } }, required: ["match"] },
     },
     async run(args) {
-      const { removed, rules } = await removeRule(text(args.match));
-      return { ok: removed > 0, result: { removed, rules }, summary: removed > 0 ? `Forgot ${removed} rule${removed === 1 ? "" : "s"}` : "No rule matched" };
+      const { value, shared } = await removeRule(text(args.match));
+      return {
+        ok: value.removed > 0,
+        result: { ...value, shared_with_team: shared },
+        summary: value.removed > 0 ? `Forgot ${value.removed} rule${value.removed === 1 ? "" : "s"}${sharedNote(shared)}` : "No rule matched",
+      };
     },
   },
   {
     declaration: {
       name: "teach_phrase",
       description:
-        "Teach the medication reader what a phrase means, so future lists read it correctly. Example: phrase 'eliquis starter' means 'apixaban 5 mg tablet'. An empty meaning removes the phrase. After teaching, re-run parse_medications on the affected line.",
+        "Teach the medication reader what a phrase means, so future lists read it correctly on every computer. Example: phrase 'eliquis starter' means 'apixaban 5 mg tablet'. An empty meaning removes the phrase. After teaching, re-run parse_medications on the affected line.",
       parameters: {
         type: "object",
         properties: { phrase: { type: "string" }, meaning: { type: "string" } },
@@ -432,8 +449,12 @@ const tools: AssistantTool[] = [
       },
     },
     async run(args) {
-      await setAlias(text(args.phrase), text(args.meaning));
-      return { result: { phrase: text(args.phrase), meaning: text(args.meaning) }, summary: `Taught "${text(args.phrase)}" = "${text(args.meaning)}"` };
+      const { shared } = await setAlias(text(args.phrase), text(args.meaning));
+      const meaning = text(args.meaning);
+      return {
+        result: { phrase: text(args.phrase), meaning, shared_with_team: shared },
+        summary: `${meaning ? `Taught "${text(args.phrase)}" = "${meaning}"` : `Forgot the phrase "${text(args.phrase)}"`}${sharedNote(shared)}`,
+      };
     },
   },
   {
@@ -448,8 +469,35 @@ const tools: AssistantTool[] = [
       },
     },
     async run(args) {
-      await logRequest(text(args.request), text(args.example));
-      return { result: { logged: true }, summary: `Logged for the developer: ${text(args.request)}` };
+      const { value, shared } = await logRequest(text(args.request), text(args.example));
+      return { result: { logged: true, id: shortId(value.id), shared_with_team: shared }, summary: `Logged for the developer: ${text(args.request)}${sharedNote(shared)}` };
+    },
+  },
+  {
+    declaration: {
+      name: "list_requests",
+      description: "Show the feature requests and misreads logged for the developer, open first, with their ids and who logged them.",
+    },
+    async run() {
+      const { requests } = await listKnowledge();
+      const line = (item: (typeof requests)[number]) => `${shortId(item.id)}: ${item.text} (${item.author}, ${item.createdAt.slice(0, 10)})`;
+      const open = requests.filter((item) => item.status !== "done");
+      return {
+        result: { open: open.map(line), done: requests.filter((item) => item.status === "done").map(line) },
+        summary: `${open.length} open request${open.length === 1 ? "" : "s"}`,
+      };
+    },
+  },
+  {
+    declaration: {
+      name: "mark_request_done",
+      description: "Mark a logged request as done, by the id shown in list_requests.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+    async run(args) {
+      const { value, shared } = await markRequestDone(text(args.id));
+      if (!value) return { ok: false, result: { error: "No request has that id." }, summary: "Request not found" };
+      return { result: { done: value.text, shared_with_team: shared }, summary: `Marked done: ${value.text}${sharedNote(shared)}` };
     },
   },
 ];

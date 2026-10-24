@@ -3,9 +3,13 @@
 # The deploy key is a read-only GitHub deploy key for atphung21/medicare-ca-compare.
 # Generate it on your own computer, add the public key in the repo's deploy keys, and copy only the private key to the client for this command.
 
+# Add -KnowledgeToken github_pat_... -Author Eric to share the assistant's team memory (see connect-knowledge.ps1).
+
 param(
   [string]$DeployKeyPath,
-  [string]$InstallDir = "C:\MedicareCompare"
+  [string]$InstallDir = "C:\MedicareCompare",
+  [string]$KnowledgeToken,
+  [string]$Author
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,7 +102,12 @@ git -C $InstallDir config core.sshCommand (Get-SshCommand $keyDest)
 $envFile = Join-Path $InstallDir ".env.local"
 if (-not (Test-Path $envFile)) {
   Set-Content -LiteralPath $envFile -Value "PLAYWRIGHT_HEADLESS=false`r`n" -Encoding ascii
-  Write-Host "Wrote $envFile. Add GEMINI_API_KEY on its own line only if this client will use pill-bottle photos."
+  Write-Host "Wrote $envFile. Add GEMINI_API_KEY on its own line for the assistant and pill-bottle photos."
+}
+if ($KnowledgeToken) {
+  if (-not $Author) { $Author = $env:USERNAME }
+  & (Join-Path $InstallDir "scripts\client\connect-knowledge.ps1") -Token $KnowledgeToken -Author $Author -InstallDir $InstallDir
+  if ($LASTEXITCODE -ne 0) { Write-Host "Setup continues; run connect-knowledge.ps1 again once the token works." }
 }
 
 Push-Location $InstallDir

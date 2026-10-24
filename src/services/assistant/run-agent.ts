@@ -1,4 +1,5 @@
 import { geminiChat, type GeminiContent } from "@/lib/gemini";
+import { pullKnowledge } from "./knowledge-sync";
 import { readMemory } from "./memory";
 import type { AssistantSession, ChatMessage, ToolEvent } from "./session";
 import { runTool, toolDeclarations } from "./tools";
@@ -13,7 +14,7 @@ How to work:
 - Quantities are per fill: tablets and capsules count units; eye drops count mL (one 5, 10 or 15 mL bottle a month); insulin counts mL (pens are 3 mL, vials 10 mL); inhalers, creams and pens count packages.
 - Diabetic supplies (test strips, lancets, sensors, pen needles) are searched on Medicare.gov by name. If Medicare.gov does not list one it is usually covered under Part B instead of Part D; say so.
 - compare_plans gives sample planning estimates, not live prices. Say that, and offer run_medicare_proof for real Medicare.gov screenshots. Always ask before running run_medicare_proof, because it takes one to three minutes.
-- When the user teaches you something ("remember", "always", "from now on"), save it with remember_rule. When a medication phrase was misread, teach it with teach_phrase and re-read the line. When the app cannot do something, or the user asks for a new feature, log it with log_enhancement_request so the developer can build it.
+- When the user teaches you something ("remember", "always", "from now on"), save it with remember_rule. When a medication phrase was misread, teach it with teach_phrase and re-read the line. When the app cannot do something, or the user asks for a new feature, log it with log_enhancement_request so the developer can build it. This memory is shared by everyone on the team, so lessons from one computer apply on all of them; each tool result says whether the lesson was shared.
 - Be brief and plain. Use short lists, not tables. Use dollar amounts as the tools give them.`;
 
 function sessionSnapshot(session: AssistantSession) {
@@ -32,9 +33,10 @@ function historyContents(messages: ChatMessage[]): GeminiContent[] {
 }
 
 export async function runAgent(messages: ChatMessage[], session: AssistantSession) {
+  await pullKnowledge();
   const memory = await readMemory();
   const rules = memory.rules.length > 0
-    ? `\n\nRules the user taught you. Follow them:\n${memory.rules.map((rule, index) => `${index + 1}. ${rule}`).join("\n")}`
+    ? `\n\nRules taught by the user or teammates. Follow them:\n${memory.rules.map((rule, index) => `${index + 1}. ${rule}`).join("\n")}`
     : "";
   const system = `${DOMAIN_PROMPT}${rules}\n\nToday is ${new Date().toDateString()}. ${sessionSnapshot(session)}`;
   const contents = historyContents(messages);

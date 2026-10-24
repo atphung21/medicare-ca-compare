@@ -10,7 +10,9 @@
     "check:meds": "node scripts/check-med-parser.mjs",
     "postinstall": "node scripts/patch-opennext-preview-props.mjs",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "knowledge": "node scripts/knowledge.mjs",
+    "check:knowledge": "node scripts/check-knowledge-sync.mjs"
   },
   "dependencies": {
     "next": "16.4.0",

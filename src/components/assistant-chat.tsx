@@ -6,6 +6,7 @@ import {
   type ChatMessage,
   type ToolEvent,
 } from "@/services/assistant/session";
+import type { SyncStatus } from "@/services/assistant/knowledge-sync";
 import Link from "next/link";
 import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 
@@ -31,6 +32,7 @@ export function AssistantChat() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [memory, setMemory] = useState<SyncStatus | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,6 +46,12 @@ export function AssistantChat() {
       }
       setLoaded(true);
     });
+    fetch("/api/agent")
+      .then((response) => response.json())
+      .then((data: { memory?: SyncStatus }) => {
+        if (data.memory) setMemory(data.memory);
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -70,9 +78,11 @@ export function AssistantChat() {
         reply?: string;
         events?: ToolEvent[];
         session?: AssistantSession;
+        memory?: SyncStatus;
         error?: string;
       };
       if (data.session) setSession(data.session);
+      if (data.memory) setMemory(data.memory);
       if (!response.ok || !data.reply) {
         setError(data.error ?? "The assistant could not answer. Try again.");
         return;
@@ -173,7 +183,7 @@ export function AssistantChat() {
         </form>
       </section>
 
-      <SessionPanel session={session} />
+      <SessionPanel session={session} memory={memory} />
     </main>
   );
 }
@@ -273,7 +283,7 @@ function Events({ events }: { events: ToolEvent[] }) {
   );
 }
 
-function SessionPanel({ session }: { session: AssistantSession }) {
+function SessionPanel({ session, memory }: { session: AssistantSession; memory: SyncStatus | null }) {
   return (
     <aside className="h-fit space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 text-sm shadow-sm lg:sticky lg:top-6">
       <div>
@@ -307,6 +317,29 @@ function SessionPanel({ session }: { session: AssistantSession }) {
           {session.lisLevel !== "LIS_NONE" ? ` · ${session.lisLevel}` : ""}
         </p>
       </div>
+      {memory ? <TeamMemory memory={memory} /> : null}
     </aside>
+  );
+}
+
+function TeamMemory({ memory }: { memory: SyncStatus }) {
+  const { rules, phrases, openRequests } = memory.counts;
+  const shared = memory.configured && !memory.pendingPush && !memory.lastError;
+  const synced = memory.lastPushedAt && memory.lastPushedAt > (memory.lastPulledAt ?? "") ? memory.lastPushedAt : memory.lastPulledAt;
+  return (
+    <div>
+      <p className="font-semibold">Team memory</p>
+      <p className="text-stone-700">
+        {rules} rule{rules === 1 ? "" : "s"} · {phrases} phrase{phrases === 1 ? "" : "s"} · {openRequests} open request
+        {openRequests === 1 ? "" : "s"}
+      </p>
+      <p className={`text-xs ${shared ? "text-stone-500" : "text-[var(--warn)]"}`}>
+        {!memory.configured
+          ? "Not shared: this computer has no KNOWLEDGE_TOKEN."
+          : shared
+            ? `Shared${synced ? ` · synced ${new Date(synced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
+            : `Not shared yet: ${memory.lastError ?? "waiting to sync"}`}
+      </p>
+    </div>
   );
 }
