@@ -104,8 +104,8 @@ if (-not (Test-Path $envFile)) {
 Push-Location $InstallDir
 try {
   Write-Host "Installing the app and Chromium..."
-  npm install
-  if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+  npm ci
+  if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
   npx playwright install chromium
   if ($LASTEXITCODE -ne 0) { throw "Chromium install failed." }
   $buildLog = Join-Path $InstallDir "build.log"

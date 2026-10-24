@@ -9,8 +9,8 @@ $BuildLog = Join-Path $InstallDir "build.log"
 
 function Install-Packages {
   Write-Host "Installing packages. This can take a few minutes."
-  cmd /c "npm install 2>&1"
-  if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+  cmd /c "npm ci 2>&1"
+  if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
   cmd /c "npx playwright install chromium 2>&1"
   if ($LASTEXITCODE -ne 0) { throw "Chromium install failed." }
 }
@@ -63,7 +63,8 @@ if (-not $offline) {
   if ($local -ne $remote) {
     Write-Host "Updating Medicare Compare. This can take a few minutes."
     $changed = @(git diff --name-only $local $remote)
-    git pull --ff-only origin main
+    # Nobody edits code on the client PC, so local changes (usually npm rewriting package-lock.json) must not block updates.
+    git reset --hard origin/main
     if ($LASTEXITCODE -ne 0) {
       Write-Host "Could not update. Opening the last version on this computer."
     } else {
