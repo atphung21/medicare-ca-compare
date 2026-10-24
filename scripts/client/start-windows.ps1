@@ -4,6 +4,25 @@ $InstallDir = "C:\MedicareCompare"
 $Url = "http://127.0.0.1:3020/"
 $KeyPath = Join-Path $InstallDir ".deploy-key"
 $SshExe = "C:\Program Files\Git\usr\bin\ssh.exe"
+$BuildId = Join-Path $InstallDir ".next\BUILD_ID"
+$BuildLog = Join-Path $InstallDir "build.log"
+
+function Install-Packages {
+  Write-Host "Installing packages. This can take a few minutes."
+  cmd /c "npm install 2>&1"
+  if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+  cmd /c "npx playwright install chromium 2>&1"
+  if ($LASTEXITCODE -ne 0) { throw "Chromium install failed." }
+}
+
+# A failed build leaves .next without BUILD_ID, so the next launch must build again instead of starting.
+function Invoke-Build {
+  Write-Host "Building Medicare Compare. This can take a few minutes."
+  cmd /c "npm run build 2>&1" | Tee-Object -FilePath $BuildLog
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $BuildId)) {
+    throw "Build failed. Send $BuildLog to support."
+  }
+}
 
 function Test-AppRunning {
   try {
@@ -55,19 +74,14 @@ if (-not $offline) {
         $_.StartsWith("src/") -or
         $_.StartsWith("public/")
       }).Count -gt 0
-      if ($lockChanged) {
-        npm install
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
-        npx playwright install chromium
-        if ($LASTEXITCODE -ne 0) { throw "Chromium install failed." }
-      }
-      if ($appChanged) {
-        npm run build
-        if ($LASTEXITCODE -ne 0) { throw "Build failed." }
-      }
+      if ($lockChanged) { Install-Packages }
+      if ($appChanged) { Invoke-Build }
     }
   }
 }
+
+if (-not (Test-Path (Join-Path $InstallDir "node_modules\next"))) { Install-Packages }
+if (-not (Test-Path $BuildId)) { Invoke-Build }
 
 Write-Host "Medicare Compare is starting. Close this window when you are finished."
 Start-Process -WindowStyle Hidden powershell -ArgumentList @(

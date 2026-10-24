@@ -108,8 +108,11 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
   npx playwright install chromium
   if ($LASTEXITCODE -ne 0) { throw "Chromium install failed." }
-  npm run build
-  if ($LASTEXITCODE -ne 0) { throw "Build failed." }
+  $buildLog = Join-Path $InstallDir "build.log"
+  cmd /c "npm run build 2>&1" | Tee-Object -FilePath $buildLog
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $InstallDir ".next\BUILD_ID"))) {
+    throw "Build failed. Send $buildLog to support."
+  }
 } finally {
   Pop-Location
 }
