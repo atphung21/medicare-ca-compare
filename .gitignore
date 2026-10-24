@@ -48,3 +48,6 @@ next-env.d.ts
 
 # local Medicare.gov proof captures
 /data/proofs/
+
+# assistant memory taught on each computer (rules, phrases, requests for the developer)
+/data/agent/

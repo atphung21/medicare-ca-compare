@@ -14,6 +14,7 @@ const sources = [
   "services/drug-spellcheck.ts",
   "services/rxnorm-resolver.ts",
   "services/med-line-normalizer.ts",
+  "services/assistant/memory.ts",
   "services/med-list-parser.ts",
 ];
 
@@ -32,6 +33,7 @@ for (const file of sources) {
 }
 
 delete process.env.GEMINI_API_KEY;
+process.env.SKIP_TAUGHT_PHRASES = "1";
 const { parseMedicationList } = await import(pathToFileURL(path.join(out, "services/med-list-parser.mjs")).href);
 
 /**

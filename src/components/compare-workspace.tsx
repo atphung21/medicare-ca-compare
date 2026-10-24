@@ -25,6 +25,7 @@ import {
 } from "@/schemas/medicare";
 import type { SpellingSuggestion } from "@/services/drug-spellcheck";
 import { partDCap } from "@/services/lis";
+import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 const FORMS: { value: DosageForm; label: string }[] = [
@@ -883,13 +884,21 @@ export function CompareWorkspace() {
             {contractYear}.
           </p>
         </header>
-        <button
-          type="button"
-          onClick={resetPage}
-          className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
-        >
-          Reset form
-        </button>
+        <div className="flex gap-2">
+          <Link
+            href="/assistant"
+            className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
+          >
+            Assistant
+          </Link>
+          <button
+            type="button"
+            onClick={resetPage}
+            className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
+          >
+            Reset form
+          </button>
+        </div>
       </div>
 
       <form onSubmit={onSubmit} className="space-y-6">

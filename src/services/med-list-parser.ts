@@ -1,6 +1,7 @@
 import { geminiGenerateUrl } from "@/lib/gemini";
 import { hasStrengthUnit, matchStrengthLabel, strengthKey } from "@/lib/strength";
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
+import { applyAliases, readMemory } from "@/services/assistant/memory";
 import { catalogDrug, correctDrugToken, similarity, type SpellingSuggestion } from "@/services/drug-spellcheck";
 import {
   monthlyQuantityFor,
@@ -88,7 +89,8 @@ const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; form
 const HEADER = /^(?:current\s+)?(?:medications?|meds|med list|rx|drug list|prescriptions?)\s*:?\s*/i;
 
 export async function parseMedicationList(text: string): Promise<MedicationDraft[]> {
-  const lines = await medicationLines(text);
+  const taught = process.env.SKIP_TAUGHT_PHRASES === "1" ? {} : (await readMemory()).aliases;
+  const lines = (await medicationLines(text)).map((line) => applyAliases(line, taught));
   const perLine = await mapLimit(lines, 4, draftsForLine);
   return perLine.flat().map((draft, index) => ({ ...draft, id: `draft-${index}-${draft.id}` }));
 }
