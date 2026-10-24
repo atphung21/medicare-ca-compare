@@ -34,6 +34,8 @@ export type ProofCaptureResult =
       images: { label: string; file: string }[];
       pdf: boolean;
       step?: WizardStep;
+      /** Supplies Medicare.gov's drug search does not list. */
+      skipped?: string[];
     }
   | {
       ok: false;
@@ -90,6 +92,7 @@ export async function captureMedicareProof(
     viewport: { width: 1440, height: 1100 },
   });
   let step: WizardStep = "zip";
+  const skipped: string[] = [];
   try {
     await page.goto(planFinderUrl(input.contractYear), {
       waitUntil: "domcontentloaded",
@@ -241,19 +244,36 @@ export async function captureMedicareProof(
     }
 
     step = "drugs";
+    const searchLog: DrugSearchLog[] = [];
     for (const medication of input.medications) {
-      const added = await addMedication(page, medication);
-      if (!added) {
-        return await stop(
-          page,
-          dir,
-          proofId,
-          "drugs",
-          `Could not add ${medication.name} with its resolved strength and form.`,
-        );
+      const result = await addMedication(page, medication, searchLog);
+      if (result === "added") continue;
+      if (result === "not-listed" && medication.isSupply) {
+        skipped.push(medication.name);
+        continue;
       }
+      await writeSearchLog(dir, searchLog);
+      return await stop(
+        page,
+        dir,
+        proofId,
+        "drugs",
+        `Could not add ${medication.name} with its resolved strength and form.${offeredText(searchLog.at(-1))}`,
+      );
     }
-    const lastDrug = input.medications.at(-1)?.name;
+    await writeSearchLog(dir, searchLog);
+    if (skipped.length === input.medications.length) {
+      return await stop(
+        page,
+        dir,
+        proofId,
+        "drugs",
+        `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not on Medicare.gov's drug list. Supplies like test strips are usually covered under Part B.`,
+      );
+    }
+    const lastDrug = input.medications
+      .filter((medication) => !skipped.includes(medication.name))
+      .at(-1)?.name;
     const drugList = lastDrug
       ? page.getByText(lastDrug, { exact: false }).last()
       : page.getByRole("heading", { name: /your drugs|drug list/i }).first();
@@ -391,6 +411,7 @@ export async function captureMedicareProof(
         images: proofListImages(),
         pdf: false,
         step: "results",
+        skipped,
       };
     }
 
@@ -414,6 +435,7 @@ export async function captureMedicareProof(
       images: proofListImages(),
       pdf,
       step: "results",
+      skipped,
     };
   } catch (error) {
     const message =
@@ -477,7 +499,34 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
   return false;
 }
 
-async function addMedication(page: Page, medication: DrugInput) {
+interface DrugSearchLog {
+  name: string;
+  searches: string[];
+  options: string[];
+  dosages: string[];
+  result: AddResult;
+}
+
+type AddResult = "added" | "not-listed" | "failed";
+
+async function addMedication(
+  page: Page,
+  medication: DrugInput,
+  log: DrugSearchLog[],
+): Promise<AddResult> {
+  const entry: DrugSearchLog = {
+    name: medication.name,
+    searches: [],
+    options: [],
+    dosages: [],
+    result: "failed",
+  };
+  log.push(entry);
+  const finish = (result: AddResult) => {
+    entry.result = result;
+    return result;
+  };
+
   let search = page.getByRole("combobox").last();
   if (!(await isVisible(search, 800))) {
     if (
@@ -487,44 +536,31 @@ async function addMedication(page: Page, medication: DrugInput) {
         2500,
       ))
     )
-      return false;
+      return finish("failed");
     search = page.getByRole("combobox").last();
   }
-  if (!(await isVisible(search, 4000))) return false;
-  await search.click();
-  await search.fill(medication.name);
-  const menuId = await search.getAttribute("aria-controls");
-  const options = page.locator(
-    menuId ? `[id="${menuId}"] [role="option"]` : '[role="option"]',
-  );
-  const token =
-    medication.name
-      .trim()
-      .split(/[\s/]+/)
-      .find((word) => word.length > 2) ?? medication.name.trim();
-  const ready = options.filter({
-    hasText: new RegExp(escapeRegExp(token), "i"),
-  });
-  if (!(await isVisible(ready, 700))) {
-    await search.fill("");
-    await search.pressSequentially(medication.name, { delay: 0 });
+  if (!(await isVisible(search, 4000))) return finish("failed");
+
+  let picked = false;
+  for (const term of searchTerms(medication)) {
+    entry.searches.push(term);
+    const texts = await searchOptions(page, search, term);
+    entry.options = texts;
+    const match = medication.isSupply
+      ? pickSupplyOption(texts, medication.name)
+      : pickDrugOption(texts, medication.name);
+    if (match < 0) continue;
+    const menuId = await search.getAttribute("aria-controls");
+    await page
+      .locator(menuId ? `[id="${menuId}"] [role="option"]` : '[role="option"]')
+      .nth(match)
+      .click();
+    picked = true;
+    break;
   }
-  if (!(await isVisible(ready, 2500))) return false;
-  const wantedName = compactName(medication.name);
-  const texts = await options.evaluateAll((nodes) =>
-    nodes.slice(0, 12).map((node) => (node.textContent ?? "").trim()),
-  );
-  let match = texts.findIndex((text) => compactName(text) === wantedName);
-  if (match < 0 && !/[/-]/.test(medication.name))
-    match = texts.findIndex(
-      (text) => compactName(text).includes(wantedName) && !/[/-]/.test(text),
-    );
-  if (match < 0)
-    match = texts.findIndex((text) => compactName(text).includes(wantedName));
-  if (match < 0) return false;
-  await options.nth(match).click();
+  if (!picked) return finish("not-listed");
   const addDrug = page.locator(".e2e-add-drug-button");
-  if (!(await isVisible(addDrug, 2500))) return false;
+  if (!(await isVisible(addDrug, 2500))) return finish("failed");
   await addDrug.click({ timeout: 4000 });
 
   const dosage = page.locator('select[name="dosage"]');
@@ -532,7 +568,7 @@ async function addMedication(page: Page, medication: DrugInput) {
   const deadline = Date.now() + 15000;
   while (!(await dosage.isVisible().catch(() => false))) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return false;
+    if (remaining <= 0) return finish("failed");
     await dosage
       .or(prompt)
       .first()
@@ -545,8 +581,11 @@ async function addMedication(page: Page, medication: DrugInput) {
     .evaluateAll((nodes) =>
       nodes.map((node) => (node.textContent ?? "").trim()).filter(Boolean),
     );
-  const chosen = chooseDosageLabel(labels, medication);
-  if (!chosen) return false;
+  entry.dosages = labels;
+  const chosen = medication.isSupply
+    ? (labels.find((label) => supplyKind(label) === supplyKind(medication.name)) ?? realOptions(labels)[0])
+    : chooseDosageLabel(labels, medication);
+  if (!chosen) return finish("failed");
   await dosage.selectOption({ label: chosen });
   const quantity = page.locator('input[name="quantity"]');
   if (await quantity.isVisible().catch(() => false))
@@ -564,9 +603,99 @@ async function addMedication(page: Page, medication: DrugInput) {
     page.getByRole("button", { name: /add to my drug list/i }),
     4000,
   );
-  if (!added) return false;
+  if (!added) return finish("failed");
   await answerGenericPrompt(page, medication.acceptGeneric, 400);
-  return true;
+  return finish("added");
+}
+
+/** Types a search term and returns the first dozen suggestions, or none if Medicare.gov shows no match. */
+async function searchOptions(page: Page, search: Locator, term: string) {
+  await search.click();
+  await search.fill(term);
+  const menuId = await search.getAttribute("aria-controls");
+  const options = page.locator(
+    menuId ? `[id="${menuId}"] [role="option"]` : '[role="option"]',
+  );
+  const token =
+    term
+      .trim()
+      .split(/[\s/]+/)
+      .find((word) => word.length > 2) ?? term.trim();
+  const ready = options.filter({
+    hasText: new RegExp(escapeRegExp(token), "i"),
+  });
+  if (!(await isVisible(ready, 700))) {
+    await search.fill("");
+    await search.pressSequentially(term, { delay: 0 });
+  }
+  if (!(await isVisible(ready, 2500))) return [];
+  return options.evaluateAll((nodes) =>
+    nodes.slice(0, 12).map((node) => (node.textContent ?? "").trim()),
+  );
+}
+
+function searchTerms(medication: DrugInput) {
+  if (!medication.isSupply) return [medication.name];
+  const words = medication.name.split(/\s+/);
+  const kindIndex = words.findIndex((word) =>
+    /^(?:test|lancets|pen|insulin|sensor|meter|alcohol)$/i.test(word),
+  );
+  const brand = kindIndex > 0 ? words.slice(0, kindIndex).join(" ") : "";
+  const terms = [medication.name, brand, brand.split(" ")[0], brand ? "" : medication.name.split(" ").at(-1) ?? ""];
+  return [...new Set(terms.filter((term) => term.length > 2))];
+}
+
+function pickDrugOption(texts: string[], name: string) {
+  const wantedName = compactName(name);
+  let match = texts.findIndex((text) => compactName(text) === wantedName);
+  if (match < 0 && !/[/-]/.test(name))
+    match = texts.findIndex(
+      (text) => compactName(text).includes(wantedName) && !/[/-]/.test(text),
+    );
+  if (match < 0)
+    match = texts.findIndex((text) => compactName(text).includes(wantedName));
+  return match;
+}
+
+function supplyKind(text: string) {
+  const value = text.toLowerCase();
+  if (/lancet/.test(value)) return "lancet";
+  if (/needle/.test(value)) return "needle";
+  if (/syringe/.test(value)) return "syringe";
+  if (/sensor|libre|dexcom/.test(value)) return "sensor";
+  if (/meter|monitor/.test(value)) return "meter";
+  if (/alcohol|swab|prep pad/.test(value)) return "pad";
+  return "strip";
+}
+
+function pickSupplyOption(texts: string[], name: string) {
+  const brand = compactName(name.split(/\s+/)[0] ?? "");
+  const kind = supplyKind(name);
+  const sameBrand = (text: string) => !brand || compactName(text).includes(brand);
+  const sameKind = (text: string) => supplyKind(text) === kind;
+  let match = texts.findIndex((text) => sameBrand(text) && sameKind(text));
+  if (match < 0 && kind === "strip")
+    match = texts.findIndex((text) => sameBrand(text) && /strip/i.test(text));
+  return match;
+}
+
+function realOptions(labels: string[]) {
+  return labels.filter((label) => !/^(?:select|choose|--)/i.test(label));
+}
+
+function offeredText(entry: DrugSearchLog | undefined) {
+  if (!entry) return "";
+  if (entry.dosages.length > 0)
+    return ` Medicare.gov dosages: ${realOptions(entry.dosages).slice(0, 6).join("; ")}.`;
+  if (entry.options.length > 0)
+    return ` Medicare.gov suggestions: ${entry.options.slice(0, 6).join("; ")}.`;
+  return ` Medicare.gov had no suggestions for ${entry.searches.join(", ")}.`;
+}
+
+async function writeSearchLog(dir: string, log: DrugSearchLog[]) {
+  await writeFile(path.join(dir, "drug-search.json"), JSON.stringify(log, null, 2)).catch(
+    () => undefined,
+  );
 }
 
 function genericPromptButtons(page: Page) {
@@ -875,8 +1004,24 @@ function compactName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+/** Percent and per-mL strengths become one "/ml" suffix, so "2%" and "20 mg/ml" give the same tokens. */
 function strengthTokens(value: string) {
-  const text = value.toLowerCase();
+  let text = value
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(?:units?|iu)\b/g, "unt")
+    .replace(/(\d+(?:\.\d+)?)\s*mg\s*\/\s*(\d+(?:\.\d+)?)\s*ml\b/g, (_, amount: string, volume: string) =>
+      `${Number((Number(amount) / Number(volume)).toFixed(6))}mg/ml`,
+    );
+  const perMl = /%|\/\s*ml\b/.test(text);
+  text = text
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, (_, amount: string) => `${Number((Number(amount) * 10).toFixed(6))}mg`)
+    .replace(/\/\s*ml\b/g, "");
+  const suffix = perMl ? "/ml" : "";
+  return rawStrengthTokens(text).map((token) => token + suffix);
+}
+
+function rawStrengthTokens(text: string) {
   const range = text.match(
     /(\d+(?:\.\d+)?)\s*(mg|mcg|ml|unt|meq|g|%)?\s*[/-]\s*(\d+(?:\.\d+)?)\s*(mg|mcg|ml|unt|meq|g|%)/,
   );
@@ -901,17 +1046,23 @@ function chooseDosageLabel(labels: string[], medication: DrugInput) {
   const wantedStrength = strengthTokens(medication.strength);
   if (wantedStrength.length === 0) return undefined;
   const rules = dosageRules(medication);
-  const matches = labels.filter((label) => {
+  const fitsForm = (label: string) => {
     const text = label.toLowerCase();
-    const sameStrength =
-      strengthTokens(text).join("|") === wantedStrength.join("|");
     return (
-      sameStrength &&
       rules.required.every((pattern) => pattern.test(text)) &&
       rules.blocked.every((pattern) => !pattern.test(text))
     );
-  });
-  return matches.sort((left, right) => left.length - right.length)[0];
+  };
+  const matches = labels.filter(
+    (label) =>
+      fitsForm(label) &&
+      strengthTokens(label).join("|") === wantedStrength.join("|"),
+  );
+  if (matches.length > 0)
+    return matches.sort((left, right) => left.length - right.length)[0];
+  // Medicare.gov sometimes writes the salt amount (dorzolamide HCl 22.3 mg/ml for 2%); a lone form match is that strength.
+  const formOnly = realOptions(labels).filter(fitsForm);
+  return formOnly.length === 1 ? formOnly[0] : undefined;
 }
 
 function dosageRules(medication: DrugInput) {
@@ -932,10 +1083,11 @@ function dosageRules(medication: DrugInput) {
   else blocked.push(/extended release|24\s*hr/);
   if (disintegrating) required.push(/disintegrat/);
   else if (tablet) blocked.push(/disintegrat/);
+  const drops = medication.dosageForm === "DROPS";
   if (/powder/.test(label)) required.push(/powder/);
-  if (/solution/.test(label) && !/tablet|capsule/.test(label))
+  if (!drops && /solution/.test(label) && !/tablet|capsule/.test(label))
     required.push(/solution/);
-  if (/suspension/.test(label)) required.push(/suspension/);
+  if (!drops && /suspension/.test(label)) required.push(/suspension/);
   if (capsule) {
     required.push(/capsule/);
     blocked.push(/tablet/);
@@ -947,8 +1099,7 @@ function dosageRules(medication: DrugInput) {
   else if (medication.dosageForm === "INHALER") required.push(/inhal/);
   else if (medication.dosageForm === "CREAM")
     required.push(/cream|ointment|gel/);
-  else if (medication.dosageForm === "DROPS")
-    required.push(/drop|ophthalmic|otic/);
+  else if (drops) required.push(/drop|ophthalmic|otic|eye|ear|soln|solution|susp/);
   else if (medication.dosageForm === "VIAL")
     required.push(/inject|vial|solution/);
   return { required, blocked };

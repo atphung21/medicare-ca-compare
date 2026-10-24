@@ -8,13 +8,20 @@ export interface FormHints {
   tablet: boolean;
   pen: boolean;
   inhaler: boolean;
+  metered: boolean;
+  powder: boolean;
   solution: boolean;
   patch: boolean;
   cream: boolean;
   ointment: boolean;
   drops: boolean;
+  spray: boolean;
+  sublingual: boolean;
   injection: boolean;
+  supply: boolean;
 }
+
+export type QuantityUnit = "each" | "ml" | "package";
 
 export interface NormalizedMedication {
   rawLine: string;
@@ -27,7 +34,15 @@ export interface NormalizedMedication {
   strengths: string[];
   dailyFrequency: number;
   unitsPerDose: number;
+  /** 2 for both eyes, both ears, or each nostril. */
+  sites: number;
+  /** Liquid dose, such as "5 ml tid". */
+  mlPerDose: number;
+  /** Insulin dose, such as "20 units qhs". */
+  insulinUnitsPerDose: number;
+  insulin: boolean;
   monthlyQuantity: number;
+  quantityUnit: QuantityUnit;
   hints: FormHints;
   /** Instruction and form words, kept so a split line can be parsed again per drug. */
   sigText: string;
@@ -43,7 +58,16 @@ const COUNT_WORDS: Record<string, number> = {
 };
 
 const DOSE_UNIT =
-  "(tabs?|tablets?|caps?|capsules?|pills?|puffs?|sprays?|drops?|pens?|patch(?:es)?|softgels?)";
+  "(tabs?|tablets?|caps?|capsules?|pills?|puffs?|sprays?|drops?|gtts?|pens?|patch(?:es)?|softgels?|strips?|tests?|injections?|applications?|suppositor(?:y|ies)|lozenges?|vials?|ampules?)";
+
+const SITES =
+  /\b(?:(?:in|into|to)\s+)?(?:both|each|all)\s+(?:eyes?|ears?|nostrils?|nares)\b|\b(?:ou|au)\b|\bper\s+nostril\b/;
+
+const INSULIN =
+  /\b(?:insulin|lantus|levemir|humalog|novolog|basaglar|toujeo|tresiba|admelog|lyumjev|fiasp|humulin|novolin|semglee|apidra|rezvoglar|glargine|lispro|aspart|detemir|degludec)\b/;
+
+const SUPPLY =
+  /\b(?:test\s*strips?|strips?|lancets?|lancing|pen\s*needles?|needles?|syringes?|sensors?|meters?|glucometers?|free\s*style|one\s*touch|accu\s*chek|accu\s*check|contour|true\s*metrix|dexcom|libre|alcohol\s*(?:pads?|swabs?|prep))\b/;
 const COUNT = "(\\d+(?:\\.\\d+)?|one|two|three|four|half|1\\/2)";
 
 const FREQUENCIES: [RegExp, (match: RegExpMatchArray) => number][] = [
@@ -67,6 +91,7 @@ const FREQUENCIES: [RegExp, (match: RegExpMatchArray) => number][] = [
     () => 1 / 7,
   ],
   [/\b(?:every other day|qod|alternate days)\b/, () => 0.5],
+  [/\b(?:with meals|before meals|after meals|ac|pc|sliding scale|ss)\b/, () => 3],
   [
     /\b(?:once(?: (?:a|per) day| daily)?|daily|every day|each day|per day|a day|qd|qday|qam|qpm|qhs|hs|nightly|at night|at bedtime|bedtime|every (?:morning|evening|night)|in the (?:morning|evening))\b/,
     () => 1,
@@ -93,18 +118,25 @@ const HINTS: [keyof FormHints, RegExp][] = [
     "pen",
     /\b(?:pens?|flex ?pen|kwik ?pen|solostar|auto[- ]?injectors?|prefilled syringes?)\b/g,
   ],
+  ["metered", /\b(?:hfa|mdi|aerosol|metered)\b/g],
+  ["powder", /\b(?:diskus|ellipta|dpi|respiclick|inhub|twisthaler|pressair|powder)\b/g],
   [
     "inhaler",
-    /\b(?:inhalers?|hfa|puffs?|inhal\w*|diskus|respimat|ellipta|nebuli\w*)\b/g,
+    /\b(?:inhalers?|puffs?|inhal\w*|respimat|nebuli\w*)\b/g,
   ],
-  ["solution", /\b(?:solution|liquid|syrup|elixir|suspension)\b/g],
+  ["drops", /\b(?:eye\s+drops?|ear\s+drops?|drops?|gtts?|ophth?|ophthalmic|otic)\b/g],
+  ["spray", /\b(?:nasal(?:\s+spray)?|sprays?|nostrils?|nares)\b/g],
+  [
+    "solution",
+    /\b(?:solution|soln|sol|liquid|syrup|elixir|suspension|susp|oral\s+solution)\b/g,
+  ],
   ["patch", /\b(?:patch(?:es)?|transdermal)\b/g],
-  ["cream", /\bcream\b/g],
-  ["ointment", /\bointment\b/g],
-  ["drops", /\b(?:drops?|ophthalmic|otic)\b/g],
+  ["cream", /\b(?:cream|lotion)\b/g],
+  ["ointment", /\b(?:ointment|oint)\b/g],
+  ["sublingual", /\b(?:sl|sublingual|under (?:the )?tongue)\b/g],
   [
     "injection",
-    /\b(?:inj|injections?|injectable|vials?|subq|sub-q|subcutaneous)\b/g,
+    /\b(?:inj|injections?|injectable|vials?|subq|sub-q|sq|subcutaneous(?:ly)?|intramuscular(?:ly)?|im)\b/g,
   ],
 ];
 
@@ -119,7 +151,15 @@ const STOP_WORDS = new Set(
   generic brand name strength dose doses dosage medication medications med meds drug drugs pill pills
   tab tabs tablet tablets cap caps capsule capsules unit units mg mcg ml
   start stop continue new old current currently also plus about approx approximately
-  regular extra`
+  regular extra into onto from up over both ou od os au ad
+  topically topical externally external thin layer film rinse gargle shake well
+  iv sq subq units sliding scale ss times
+  bottle bottles tube tubes box boxes pack packs package kit supply supplies
+  sugar sugars glucose check checks test testing tests
+  nostril nostrils nares spray sprays
+  chest headache headaches angina heart swelling edema itch itching rash cough wheezing wheeze breath shortness
+  constipation diarrhea allergy allergies infection insomnia depression mood thyroid gout arthritis migraine
+  migraines seizure seizures vomiting fever inflammation glaucoma heartburn reflux muscle spasm spasms back joint`
     .split(/\s+/)
     .filter(Boolean),
 );
@@ -180,6 +220,13 @@ const ABBREVIATIONS: Record<string, string> = {
   nitro: "nitroglycerin",
   ppi: "omeprazole",
   mvi: "multivitamin",
+  mvit: "multivitamin",
+  fe: "ferrous sulfate",
+  cyanocobalamine: "cyanocobalamin",
+  tmp: "trimethoprim",
+  smx: "sulfamethoxazole",
+  pcn: "penicillin",
+  amox: "amoxicillin",
 };
 
 export function normalizeMedicationLine(line: string): NormalizedMedication {
@@ -192,6 +239,16 @@ export function normalizeMedicationLine(line: string): NormalizedMedication {
     text = text.replace(match[0], " ");
     return match;
   };
+
+  const supply = SUPPLY.test(text) && !/\bprefilled\b/.test(text);
+  const insulin = INSULIN.test(text);
+  const sites = remove(SITES) ? 2 : 1;
+
+  let insulinUnitsPerDose = 0;
+  if (insulin) {
+    const units = remove(/\b(?:inject\s+)?(\d+(?:\.\d+)?)\s*(?:units?|u|iu)\b(?!\s*\/)/);
+    if (units) insulinUnitsPerDose = Number(units[1]);
+  }
 
   let unitsPerDose = 1;
   const countMatch = text.match(
@@ -233,8 +290,30 @@ export function normalizeMedicationLine(line: string): NormalizedMedication {
     }
   }
   if (/\bsuccinate\b/.test(text)) hints.extended = true;
+  if (hints.metered || (hints.powder && hints.inhaler)) hints.inhaler = true;
+  hints.supply = supply;
 
   const strengths: string[] = [];
+  const perVolume = new RegExp(
+    `(\\d+(?:\\.\\d+)?)\\s*(mg|mcg|g|units?|unt|iu|meq)\\s*\\/\\s*(\\d+(?:\\.\\d+)?)?\\s*ml\\b`,
+  );
+  let volumeMatch = text.match(perVolume);
+  while (volumeMatch) {
+    const per = volumeMatch[3] ? `/${Number(volumeMatch[3])} ml` : "/ml";
+    strengths.push(formatStrength(volumeMatch[1], canonicalUnit(volumeMatch[2])) + per);
+    const typedForm = Object.entries(hints).some(([key, on]) => on && key !== "extended" && key !== "delayed");
+    if (!insulin && !typedForm && /^(?:mg|mcg|g)$/.test(volumeMatch[2])) hints.solution = true;
+    text = text.replace(volumeMatch[0], " ");
+    volumeMatch = text.match(perVolume);
+  }
+
+  let mlPerDose = 0;
+  for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*ml\b(\s*(?:bottles?|vials?|tubes?|pens?|containers?))?/g)) {
+    if (!match[2] && mlPerDose === 0) mlPerDose = Number(match[1]);
+    sig.push(match[0].trim());
+  }
+  text = text.replace(/(\d+(?:\.\d+)?)\s*ml\b/g, " ");
+
   const combo = new RegExp(
     `(\\d+(?:\\.\\d+)?)\\s*(?:${STRENGTH_UNIT}(?![a-z]))?\\s*(?:-|\\/|\\+|and)\\s*(\\d+(?:\\.\\d+)?)\\s*(?:${STRENGTH_UNIT}(?![a-z]))?`,
   );
@@ -270,20 +349,74 @@ export function normalizeMedicationLine(line: string): NormalizedMedication {
 
   const typedName = groups.map((group) => group.typed.join(" ")).join(" ");
   const tokens = groups.flatMap((group) => group.expanded);
-  const frequency = dailyFrequency ?? 1;
-  return {
+  const normalized: NormalizedMedication = {
     rawLine: line.trim(),
     typedName,
     name: tokens.join(" "),
     tokens,
     explicitCombo: groups.length >= 2,
-    strengths,
-    dailyFrequency: frequency,
+    strengths: supply ? [] : strengths,
+    dailyFrequency: dailyFrequency ?? 1,
     unitsPerDose,
-    monthlyQuantity: Math.max(1, Math.round(frequency * unitsPerDose * 30)),
+    sites,
+    mlPerDose,
+    insulinUnitsPerDose,
+    insulin,
+    monthlyQuantity: 1,
+    quantityUnit: "each",
     hints,
     sigText: sig.join(" "),
   };
+  const { quantity, unit } = monthlyQuantityFor(normalized, hintedFormLabel(hints));
+  normalized.monthlyQuantity = quantity;
+  normalized.quantityUnit = unit;
+  return normalized;
+}
+
+const DROPS_PER_ML = 20;
+const BOTTLE_SIZES_ML = [5, 10, 15];
+const UNITS_PER_ML = 100;
+
+/** A 30-day supply in the unit Medicare.gov asks for: drops and insulin in mL, inhalers and tubes as one package. */
+export function monthlyQuantityFor(
+  norm: NormalizedMedication,
+  formLabel: string,
+): { quantity: number; unit: QuantityUnit } {
+  const form = formLabel.toLowerCase();
+  const perDay = norm.dailyFrequency * norm.unitsPerDose * norm.sites;
+  if (norm.hints.supply) return { quantity: Math.max(1, Math.ceil(perDay * 30)), unit: "each" };
+  if (/ophthalmic|otic|drop/.test(form)) {
+    const ml = (perDay * 30) / DROPS_PER_ML;
+    const bottle = BOTTLE_SIZES_ML.find((size) => size >= ml) ?? Math.ceil(ml / 5) * 5;
+    return { quantity: bottle, unit: "ml" };
+  }
+  if (norm.insulin) {
+    const packageMl = /\bpen\b|injector|prefilled|cartridge/.test(form) ? 3 : 10;
+    if (norm.insulinUnitsPerDose === 0) {
+      return { quantity: packageMl === 3 ? 15 : 10, unit: "ml" };
+    }
+    const ml = (norm.insulinUnitsPerDose * norm.dailyFrequency * 30) / UNITS_PER_ML;
+    return { quantity: Math.max(packageMl, Math.ceil(ml / packageMl) * packageMl), unit: "ml" };
+  }
+  if (/inhal|aerosol|cream|ointment|\bgel\b|lotion|nasal|spray|\bpen\b|injector|prefilled/.test(form)) {
+    return { quantity: 1, unit: "package" };
+  }
+  if (norm.mlPerDose > 0 && /solution|suspension|syrup|elixir|liquid/.test(form)) {
+    return { quantity: Math.max(1, Math.ceil(norm.mlPerDose * norm.dailyFrequency * 30)), unit: "ml" };
+  }
+  return { quantity: Math.max(1, Math.round(perDay * 30)), unit: "each" };
+}
+
+function hintedFormLabel(hints: FormHints) {
+  if (hints.drops) return "ophthalmic solution";
+  if (hints.spray) return "nasal spray";
+  if (hints.inhaler) return "inhaler";
+  if (hints.pen) return "pen injector";
+  if (hints.cream) return "cream";
+  if (hints.ointment) return "ointment";
+  if (hints.solution) return "oral solution";
+  if (hints.injection) return "injection";
+  return "oral tablet";
 }
 
 function prepare(line: string) {
@@ -291,6 +424,11 @@ function prepare(line: string) {
     .toLowerCase()
     .replace(/[\u2013\u2014]/g, "-")
     .replace(/µg/g, "mcg")
+    .replace(/\b(?:vitamin|vit)\s*b\s*-?\s*12\b|\bb\s*-?12\b/g, " cyanocobalamin ")
+    .replace(/\b(?:vitamin|vit)\s*d\s*-?\s*3\b|\bd3\b/g, " cholecalciferol ")
+    .replace(/\bvit\b/g, "vitamin")
+    .replace(/\bfree\s+style\b/g, "freestyle")
+    .replace(/\baccu[\s-]*che(?:c)?k\b/g, "accuchek")
     .replace(/\b(?:[a-z]\.){2,}[a-z]?\.?/g, (match) => match.replace(/\./g, ""))
     .replace(/(\d),(\d{3})\b/g, "$1$2")
     .replace(/(^|[^\d.])\.(\d)/g, (_, before: string, digit: string) => `${before}0.${digit}`)

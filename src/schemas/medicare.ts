@@ -11,6 +11,7 @@ export const DosageFormSchema = z.enum([
   "INHALER",
   "CREAM",
   "DROPS",
+  "SUPPLY",
 ]);
 export type DosageForm = z.infer<typeof DosageFormSchema>;
 
@@ -36,7 +37,7 @@ export type ResolvedVariant = z.infer<typeof ResolvedVariantSchema>;
 export const DrugInputSchema = z.object({
   id: z.string(),
   name: z.string().trim().min(2, "Drug name is required"),
-  strength: z.string().trim().min(1, "Strength is required, for example 20mg"),
+  strength: z.string().trim(),
   dosageForm: DosageFormSchema,
   dosageFormLabel: z.string().optional(),
   quantityPerFill: z.number().int().min(1, "Quantity is required"),
@@ -49,6 +50,12 @@ export const DrugInputSchema = z.object({
   isBrand: z.boolean().optional(),
   compareBothForms: z.boolean().optional(),
   alternate: ResolvedVariantSchema.optional(),
+  /** Diabetic supplies such as test strips have no strength and are searched on Medicare.gov by name. */
+  isSupply: z.boolean().optional(),
+}).superRefine((drug, context) => {
+  if (!drug.isSupply && drug.strength.length === 0) {
+    context.addIssue({ code: "custom", path: ["strength"], message: "Strength is required, for example 20mg" });
+  }
 });
 
 export const PharmacyInputSchema = z.object({
@@ -129,9 +136,8 @@ export interface MedicarePlanComparison {
 
 export function coarseDosageForm(label: string): DosageForm {
   const text = label.toLowerCase();
-  if (text.includes("pen") || text.includes("auto-injector") || text.includes("autoinjector")) {
-    return "INJECTABLE_PEN";
-  }
+  if (/\bsupply\b/.test(text)) return "SUPPLY";
+  if (/\bpen\b|auto-?injector|prefilled/.test(text)) return "INJECTABLE_PEN";
   if (text.includes("inhal") || text.includes("diskus") || text.includes("ellipta") || text.includes("respimat") || text.includes("hfa")) {
     return "INHALER";
   }

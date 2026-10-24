@@ -101,7 +101,7 @@ export function ChatDrugIntake({
         value={text}
         onChange={(event) => setText(event.target.value)}
         rows={5}
-        placeholder="Type or paste medications in any format, such as: lisinoprill 10 once a day, metformin ER 500 2 tabs bid, Eliquis"
+        placeholder="Type or paste medications in any format, such as: lisinoprill 10 once a day, metformin ER 500 2 tabs bid, dorzolamide 2% 1 drop both eyes bid, FreeStyle test strips 3x daily"
         className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
       />
       <button
@@ -118,6 +118,7 @@ export function ChatDrugIntake({
 }
 
 function cardsFromDraft(draft: MedicationDraft): CheckedMedication[] {
+  if (draft.isSupply) return [supplyCard(draft)];
   const selectedStrengths = draft.strengths.filter((option) => option.selected);
   if (selectedStrengths.length === 0) {
     const chosenForms = new Set(
@@ -151,6 +152,32 @@ function cardsFromDraft(draft: MedicationDraft): CheckedMedication[] {
       return cardFor(draft, strength.label, variants, [], "AUTO_LOCKED");
     return cardFor(draft, strength.label, [], [], "UNRESOLVED", formPool[0]);
   });
+}
+
+function supplyCard(draft: MedicationDraft): CheckedMedication {
+  return {
+    drug: {
+      id: crypto.randomUUID(),
+      name: draft.drugName,
+      strength: "",
+      dosageForm: "SUPPLY",
+      dosageFormLabel: "Diabetic supply",
+      quantityPerFill: draft.monthlyQuantity,
+      refillFrequencyMonths: "1",
+      acceptGeneric: true,
+      resolutionStatus: "AUTO_LOCKED",
+      isSupply: true,
+    },
+    note: {
+      rawLine: draft.rawLine,
+      originalTypedName: draft.originalTypedName,
+      wasSpellCorrected: draft.wasSpellCorrected,
+      confidenceScore: draft.confidenceScore,
+      spellingSuggestions: [],
+      strengthChoices: [],
+    },
+    forms: [],
+  };
 }
 
 function cardFor(

@@ -234,12 +234,13 @@ function parseRxNormName(rxcui: string, fullName: string, isBrand: boolean): Res
     return variantFrom(rxcui, fullName, perDose[1].replace(/\s*,\s*/g, ", ").toUpperCase(), dosageForm, isBrand);
   }
   const combo = name.match(
-    /(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)\s*\/\s*[a-z].+?\s+(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)\s+(.+)$/i,
+    /(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)(\/(?:ML|ACTUAT|HR))?\s*\/\s*[a-z].+?\s+(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)(\/(?:ML|ACTUAT|HR))?\s+(.+)$/i,
   );
   if (combo) {
-    const dosageForm = combo[5].replace(/\[.*?\]/g, "").replace(/\s+/g, " ").trim();
+    const dosageForm = combo[7].replace(/\[.*?\]/g, "").replace(/\s+/g, " ").trim();
     if (!dosageForm) return null;
-    return variantFrom(rxcui, fullName, `${combo[1]} ${combo[2]} / ${combo[3]} ${combo[4]}`.toUpperCase(), dosageForm, isBrand);
+    const strength = `${combo[1]} ${combo[2]}${combo[3] ?? ""} / ${combo[4]} ${combo[5]}${combo[6] ?? ""}`;
+    return variantFrom(rxcui, fullName, strength.toUpperCase(), dosageForm, isBrand);
   }
   const strengthMatch = name.match(/(\d+(?:\.\d+)?\s*(?:MG|MCG|ML|UNT|MEQ|G|%)(?:\/(?:ML|ACTUAT|HR|DOSE))?)/i);
   if (!strengthMatch || strengthMatch.index === undefined) return null;

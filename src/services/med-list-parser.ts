@@ -2,7 +2,12 @@ import { geminiGenerateUrl } from "@/lib/gemini";
 import { hasStrengthUnit, matchStrengthLabel, strengthKey } from "@/lib/strength";
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
 import { catalogDrug, correctDrugToken, similarity, type SpellingSuggestion } from "@/services/drug-spellcheck";
-import { normalizeMedicationLine, type FormHints, type NormalizedMedication } from "@/services/med-line-normalizer";
+import {
+  monthlyQuantityFor,
+  normalizeMedicationLine,
+  type FormHints,
+  type NormalizedMedication,
+} from "@/services/med-line-normalizer";
 import { listRxNormVariants } from "@/services/rxnorm-resolver";
 
 export type DraftStatus = "READY" | "MISSING_STRENGTH" | "MULTIPLE_FORMS";
@@ -34,6 +39,7 @@ export interface MedicationDraft {
   typedStrength: string | null;
   dailyFrequency: number;
   monthlyQuantity: number;
+  isSupply: boolean;
   status: DraftStatus;
   strengths: StagingOption[];
   forms: StagingOption[];
@@ -131,6 +137,7 @@ async function splitParagraphWithGemini(text: string) {
 
 async function draftsForLine(line: string): Promise<MedicationDraft[]> {
   const norm = normalizeMedicationLine(line);
+  if (norm.hints.supply) return [supplyDraft(norm)];
   if (norm.tokens.length === 0) return [];
 
   const whole = await resolveName(norm.name, norm.typedName);
@@ -248,10 +255,14 @@ function buildDraft(norm: NormalizedMedication, resolution: NameResolution): Med
   const formGroups = groupBy(variants, (variant) => variant.dosageForm);
   formGroups.sort((left, right) => formRank(left.label) - formRank(right.label));
   if (formGroups.length === 0) formGroups.push({ label: "Oral Tablet", variants: [] });
-  const selectedForms = chooseForms(
-    formGroups.map((group) => group.label),
-    norm.hints,
+  const strengthForms = new Set(
+    strengthGroups
+      .find((group) => group.label === selectedStrength)
+      ?.variants.map((variant) => variant.dosageForm) ?? [],
   );
+  const formLabels = formGroups.map((group) => group.label);
+  const fitting = formLabels.filter((label) => strengthForms.has(label));
+  const selectedForms = chooseForms(fitting.length > 0 ? fitting : formLabels, norm.hints);
 
   const strengths = strengthGroups.map((group) => ({
     label: group.label,
@@ -264,6 +275,7 @@ function buildDraft(norm: NormalizedMedication, resolution: NameResolution): Med
     variants: group.variants,
   }));
   const explicitForm = Object.values(norm.hints).some(Boolean);
+  const quantityForm = selectedForms[0] ?? formGroups[0]?.label ?? "";
 
   return {
     id: resolution.key.replace(/\s+/g, "-") || "drug",
@@ -275,10 +287,66 @@ function buildDraft(norm: NormalizedMedication, resolution: NameResolution): Med
     spellingSuggestions: resolution.suggestions,
     typedStrength: typedStrength ? (hasStrengthUnit(typedStrength) ? typedStrength : `${typedStrength} mg`) : null,
     dailyFrequency: norm.dailyFrequency,
-    monthlyQuantity: norm.monthlyQuantity,
+    monthlyQuantity: monthlyQuantityFor(norm, quantityForm).quantity,
+    isSupply: false,
     status: draftStatus(strengths, forms, explicitForm),
     strengths,
     forms,
+  };
+}
+
+const SUPPLY_BRANDS: [RegExp, string][] = [
+  [/\bfreestyle\s+libre\s*3\b/, "FreeStyle Libre 3"],
+  [/\bfreestyle\s+libre\b|\blibre\b/, "FreeStyle Libre 2"],
+  [/\bfreestyle\b/, "FreeStyle Lite"],
+  [/\bone\s*touch\s+verio\b/, "OneTouch Verio"],
+  [/\bone\s*touch\b/, "OneTouch Ultra"],
+  [/\baccuchek\b/, "Accu-Chek Guide"],
+  [/\bcontour\b/, "Contour Next"],
+  [/\btrue\s*metrix\b/, "True Metrix"],
+  [/\bdexcom\s+g\s*6\b/, "Dexcom G6"],
+  [/\bdexcom\b/, "Dexcom G7"],
+];
+
+const SUPPLY_KINDS: [RegExp, string][] = [
+  [/\blancets?\b|\blancing\b/, "Lancets"],
+  [/\bpen\s*needles?\b|\bneedles?\b/, "Pen Needles"],
+  [/\bsyringes?\b/, "Insulin Syringes"],
+  [/\bsensors?\b|\blibre\b|\bdexcom\b/, "Sensor"],
+  [/\bmeters?\b|\bglucometers?\b/, "Meter"],
+  [/\balcohol\b/, "Alcohol Prep Pads"],
+];
+
+function supplyName(rawLine: string) {
+  const text = rawLine
+    .toLowerCase()
+    .replace(/\bfree\s+style\b/g, "freestyle")
+    .replace(/\baccu[\s-]*che(?:c)?k\b/g, "accuchek");
+  const brand = SUPPLY_BRANDS.find(([pattern]) => pattern.test(text))?.[1] ?? "";
+  const kind =
+    SUPPLY_KINDS.find(([pattern]) => pattern.test(text))?.[1] ??
+    (/libre|dexcom/i.test(brand) ? "Sensor" : "Test Strips");
+  if (!brand) return kind === "Test Strips" ? "Glucose Test Strips" : kind;
+  return `${brand} ${kind}`;
+}
+
+function supplyDraft(norm: NormalizedMedication): MedicationDraft {
+  const name = supplyName(norm.rawLine);
+  return {
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    rawLine: norm.rawLine,
+    drugName: name,
+    originalTypedName: norm.rawLine,
+    wasSpellCorrected: name.toLowerCase() !== norm.rawLine.toLowerCase(),
+    confidenceScore: 90,
+    spellingSuggestions: [],
+    typedStrength: null,
+    dailyFrequency: norm.dailyFrequency,
+    monthlyQuantity: norm.monthlyQuantity,
+    isSupply: true,
+    status: "READY",
+    strengths: [],
+    forms: [{ label: "Diabetic supply", selected: true, variants: [] }],
   };
 }
 
@@ -289,14 +357,18 @@ function draftStatus(strengths: StagingOption[], forms: StagingOption[], explici
 }
 
 const FORM_RULES: [keyof FormHints, RegExp][] = [
-  ["pen", /pen|injector|prefilled/i],
+  ["pen", /\bpen\b|injector|prefilled/i],
   ["inhaler", /inhal|aerosol|powder/i],
+  ["metered", /metered|aerosol/i],
+  ["powder", /powder/i],
   ["patch", /patch|transdermal/i],
   ["cream", /cream/i],
   ["ointment", /ointment/i],
   ["drops", /ophthalmic|otic|drop/i],
+  ["spray", /nasal|spray/i],
   ["solution", /solution|suspension|syrup|elixir/i],
   ["injection", /inject|vial/i],
+  ["sublingual", /sublingual/i],
   ["disintegrating", /disintegrating/i],
   ["extended", /extended|24 hr|12 hr/i],
   ["delayed", /delayed/i],
@@ -310,6 +382,10 @@ function chooseForms(labels: string[], hints: FormHints) {
     const narrowed = pool.filter((label) => pattern.test(label));
     if (narrowed.length > 0) pool = narrowed;
   }
+  if (pool !== labels && !hints.powder) {
+    const solid = pool.filter((label) => !/powder|granule/i.test(label));
+    if (solid.length > 0) pool = solid;
+  }
   if (hints.tablet && !hints.capsule) {
     const tablets = pool.filter(
       (label) =>
@@ -317,7 +393,8 @@ function chooseForms(labels: string[], hints: FormHints) {
         (hints.extended || !/extended/i.test(label)) &&
         (hints.delayed || !/delayed/i.test(label)) &&
         (hints.disintegrating || !/disintegrating/i.test(label)) &&
-        !/chewable|sublingual|buccal/i.test(label),
+        (hints.sublingual || !/sublingual/i.test(label)) &&
+        !/chewable|buccal/i.test(label),
     );
     if (tablets.length > 0) pool = tablets;
   }
@@ -391,7 +468,8 @@ function formRank(label: string) {
   if (text.includes("tablet") && !/extended|delayed|chewable|sublingual|disintegrating/.test(text)) return 2;
   if (text.includes("extended")) return 3;
   if (text.includes("capsule")) return 4;
-  return 5;
+  if (text.includes("tablet")) return 5;
+  return 6;
 }
 
 function compact(value: string) {

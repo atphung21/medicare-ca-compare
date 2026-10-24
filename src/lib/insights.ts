@@ -1,7 +1,7 @@
 import type { DrugInput, MedicarePlanComparison, PharmacyPlanQuote } from "@/schemas/medicare";
 
 export function drugsVerified(medications: DrugInput[], quote: PharmacyPlanQuote) {
-  const needed = medications.flatMap((drug) => {
+  const needed = medications.filter((drug) => !drug.isSupply).flatMap((drug) => {
     const ids = drug.rxcui ? [drug.rxcui] : [];
     if (drug.compareBothForms && drug.alternate?.rxcui) ids.push(drug.alternate.rxcui);
     return ids.length ? ids : [""];

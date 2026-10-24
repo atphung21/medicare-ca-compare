@@ -37,6 +37,7 @@ const FORMS: { value: DosageForm; label: string }[] = [
   { value: "INHALER", label: "Inhaler" },
   { value: "CREAM", label: "Cream" },
   { value: "DROPS", label: "Drops" },
+  { value: "SUPPLY", label: "Diabetic supply" },
 ];
 
 type SortKey = "total" | "drug" | "premium";
@@ -70,12 +71,22 @@ function timesPerDay(drug: DrugInput) {
   return Math.max(1, Math.round(drug.quantityPerFill / days));
 }
 
+function quantityUnit(drug: DrugInput) {
+  if (drug.dosageForm === "DROPS" || drug.dosageForm === "VIAL") return "mL";
+  if (/insulin/i.test(`${drug.name} ${drug.resolvedName ?? ""}`)) return "mL";
+  if (/solution|suspension|syrup|elixir/i.test(drug.dosageFormLabel ?? "")) return "mL";
+  if (drug.dosageForm === "SUPPLY") return "each";
+  if (drug.dosageForm === "TABLET" || drug.dosageForm === "CAPSULE") return "";
+  return drug.quantityPerFill === 1 ? "package" : "packages";
+}
+
 function quantityLabel(drug: DrugInput) {
   const days = drug.refillFrequencyMonths === "3" ? 90 : 30;
   const perDay = drug.quantityPerFill / days;
-  if ([1, 2, 3].includes(perDay))
+  const unit = quantityUnit(drug);
+  if (!unit && [1, 2, 3].includes(perDay))
     return `${perDay} ${perDay === 1 ? "time" : "times"} a day`;
-  return `${drug.quantityPerFill} per ${days}-day fill`;
+  return `${drug.quantityPerFill}${unit ? ` ${unit}` : ""} per ${days}-day fill`;
 }
 
 function newDrug(): DrugInput {
@@ -103,9 +114,11 @@ interface LisPayload {
   brandCopay: number;
 }
 
-function coversFormulary(plan: MedicarePlanComparison) {
+function coversFormulary(plan: MedicarePlanComparison, supplyIds: Set<string>) {
   const quote = plan.pharmacyQuotes[0];
-  return quote.drugBreakdowns.every((drug) => drug.tier !== null);
+  return quote.drugBreakdowns.every(
+    (drug) => drug.tier !== null || supplyIds.has(drug.drugId),
+  );
 }
 
 function inNetwork(quote: PharmacyPlanQuote) {
@@ -168,7 +181,13 @@ type ProofResult = {
   error: string;
   pdf: boolean;
   images: { label: string; src: string }[];
+  skipped: string[];
 };
+
+function skippedNote(names: string[]) {
+  if (names.length === 0) return "";
+  return `${names.join(", ")} ${names.length === 1 ? "isn't" : "aren't"} on Medicare.gov's drug list, so the proof leaves ${names.length === 1 ? "it" : "them"} out. Test strips and other diabetic supplies are usually covered under Part B.`;
+}
 
 function proofShots(data: {
   proofId?: string;
@@ -280,6 +299,9 @@ export function CompareWorkspace() {
 
   const filtered = useMemo(() => {
     const premiumCap = maxPremium === "" ? null : Number(maxPremium);
+    const supplyIds = new Set(
+      quotedMeds.filter((drug) => drug.isSupply).map((drug) => drug.id),
+    );
     const rows = plans.filter((plan) => {
       if (planType !== "ALL" && plan.planType !== planType) return false;
       if (carrier !== "ALL" && plan.carrierName !== carrier) return false;
@@ -292,7 +314,7 @@ export function CompareWorkspace() {
         return false;
       if (deductible === "zero" && plan.annualDrugDeductible !== 0)
         return false;
-      if (coveredOnly && !coversFormulary(plan)) return false;
+      if (coveredOnly && !coversFormulary(plan, supplyIds)) return false;
       if (network === "preferred") {
         const quote = plan.pharmacyQuotes.find(
           (item) => item.pharmacyId === preferredPharmacyId,
@@ -327,6 +349,7 @@ export function CompareWorkspace() {
     preferredPharmacyId,
     sortKey,
     comparePharmacyId,
+    quotedMeds,
   ]);
 
   const carriers = [...new Set(plans.map((plan) => plan.carrierName))];
@@ -634,7 +657,9 @@ export function CompareWorkspace() {
       setError("Each medication needs a name.");
       return;
     }
-    const missingStrength = medications.find((drug) => !drug.strength.trim());
+    const missingStrength = medications.find(
+      (drug) => !drug.isSupply && !drug.strength.trim(),
+    );
     if (missingStrength) {
       setError(`Pick a strength for ${missingStrength.name}.`);
       return;
@@ -844,6 +869,7 @@ export function CompareWorkspace() {
           : (data.error ?? "Medicare.gov proof is unavailable."),
         pdf: Boolean(data.ok && data.pdf),
         images: proofShots(data),
+        skipped: Array.isArray(data.skipped) ? data.skipped : [],
       };
     } catch {
       result = {
@@ -853,6 +879,7 @@ export function CompareWorkspace() {
           "Medicare.gov proof could not be captured. The sample comparison is still available.",
         pdf: false,
         images: [],
+        skipped: [],
       };
     } finally {
       setProofLoading(false);
@@ -1239,7 +1266,10 @@ export function CompareWorkspace() {
                 {medications.map((drug, index) => {
                   const note = drugNotes[drug.id];
                   const strengthChoices = note?.strengthChoices ?? [];
-                  const confirmed = Boolean(drug.rxcui);
+                  const confirmed = Boolean(drug.rxcui || drug.isSupply);
+                  const countsPerDay = ["TABLET", "CAPSULE", "SUPPLY"].includes(
+                    drug.dosageForm,
+                  );
                   const needsStrength =
                     strengthChoices.length > 0 &&
                     !drug.strength.trim() &&
@@ -1337,7 +1367,8 @@ export function CompareWorkspace() {
                       ) : null}
                       {confirmed ? (
                         <p className="text-sm text-stone-700">
-                          {drug.strength} · {quantityLabel(drug)}
+                          {drug.isSupply ? "Diabetic supply" : drug.strength} ·{" "}
+                          {quantityLabel(drug)}
                         </p>
                       ) : (
                         <input
@@ -1368,6 +1399,7 @@ export function CompareWorkspace() {
                           className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
                         />
                       )}
+                      {countsPerDay ? (
                       <div className="flex flex-wrap gap-1">
                         {[1, 2, 3].map((times) => (
                           <button
@@ -1380,6 +1412,28 @@ export function CompareWorkspace() {
                           </button>
                         ))}
                       </div>
+                      ) : (
+                        <label className="flex items-center gap-2 text-xs text-stone-600">
+                          Quantity per 30-day fill
+                          <input
+                            type="number"
+                            min={1}
+                            aria-label={`Drug ${index + 1} quantity`}
+                            value={drug.quantityPerFill}
+                            onChange={(event) =>
+                              updateDrug(drug.id, {
+                                quantityPerFill: Math.max(
+                                  1,
+                                  Math.round(Number(event.target.value) || 1),
+                                ),
+                                refillFrequencyMonths: "1",
+                              })
+                            }
+                            className="w-20 rounded-lg border border-[var(--line)] px-2 py-1 text-sm"
+                          />
+                          {quantityUnit(drug)}
+                        </label>
+                      )}
                       {(formOptions[drug.id]?.length ?? 0) <= 1 &&
                       drug.resolutionStatus === "NOT_FOUND" ? (
                         <select
@@ -1531,6 +1585,11 @@ export function CompareWorkspace() {
                   {proof?.error ? (
                     <p className="mt-3 text-sm text-[var(--warn)]">
                       {proof.error}
+                    </p>
+                  ) : null}
+                  {proof && proof.skipped.length > 0 ? (
+                    <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                      {skippedNote(proof.skipped)}
                     </p>
                   ) : null}
                   {proof && proof.images.length > 0 ? (
@@ -1694,15 +1753,17 @@ function AuditBanner({
           <li key={drug.id}>
             Typed {drug.name} {drug.strength}{" "}
             {drug.dosageFormLabel || drug.dosageForm}
-            {drug.resolvedName
-              ? ` · Resolved as ${drug.resolvedName}`
-              : " · not resolved to an RxCUI"}
+            {drug.isSupply
+              ? " · searched on Medicare.gov by name"
+              : drug.resolvedName
+                ? ` · Resolved as ${drug.resolvedName}`
+                : " · not resolved to an RxCUI"}
             {drug.rxcui ? ` · RxCUI ${drug.rxcui}` : ""}
             {drug.isBrand
               ? drug.acceptGeneric
                 ? " · generic allowed"
                 : " · brand only"
-              : drug.resolutionStatus === "AUTO_LOCKED"
+              : drug.resolutionStatus === "AUTO_LOCKED" && !drug.isSupply
                 ? " · generic"
                 : ""}
             {drug.compareBothForms && drug.alternate
