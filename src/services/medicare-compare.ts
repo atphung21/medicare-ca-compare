@@ -22,7 +22,17 @@ interface BasePlan {
   starRating: number;
   monthlyPremium: number;
   annualDrugDeductible: number;
-  californiaBenchmark: boolean;
+  benchmark: boolean;
+  /** Regional carriers only sell in these states. Omitted means the plan is offered in every state. */
+  states?: string[];
+  /** Stands in for the regional carriers outside their states. */
+  notStates?: string[];
+}
+
+function offeredIn(plan: BasePlan, state: string | undefined) {
+  if (!state) return !plan.notStates;
+  if (plan.states && !plan.states.includes(state)) return false;
+  return !plan.notStates?.includes(state);
 }
 
 const BASE_PLANS: BasePlan[] = [
@@ -36,19 +46,33 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 4.5,
     monthlyPremium: 0,
     annualDrugDeductible: 0,
-    californiaBenchmark: false,
+    benchmark: false,
+    states: ["CA"],
+  },
+  {
+    contractId: "H5216",
+    planId: "301",
+    segmentId: "000",
+    planName: "Humana Gold Plus (HMO)",
+    carrierName: "Humana",
+    planType: "MAPD",
+    starRating: 4,
+    monthlyPremium: 0,
+    annualDrugDeductible: 0,
+    benchmark: false,
+    notStates: ["CA"],
   },
   {
     contractId: "H0543",
     planId: "174",
     segmentId: "000",
-    planName: "AARP Medicare Advantage from UHC CA-0012 (HMO-POS)",
+    planName: "AARP Medicare Advantage from UHC (HMO-POS)",
     carrierName: "UnitedHealthcare",
     planType: "MAPD",
     starRating: 4,
     monthlyPremium: 0,
     annualDrugDeductible: 250,
-    californiaBenchmark: false,
+    benchmark: false,
   },
   {
     contractId: "H3815",
@@ -60,7 +84,21 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 4,
     monthlyPremium: 0,
     annualDrugDeductible: 0,
-    californiaBenchmark: false,
+    benchmark: false,
+    states: ["CA"],
+  },
+  {
+    contractId: "H3312",
+    planId: "067",
+    segmentId: "000",
+    planName: "Aetna Medicare Value Plus (HMO-POS)",
+    carrierName: "Aetna Medicare",
+    planType: "MAPD",
+    starRating: 4,
+    monthlyPremium: 0,
+    annualDrugDeductible: 150,
+    benchmark: false,
+    notStates: ["CA"],
   },
   {
     contractId: "S4802",
@@ -72,7 +110,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 12.4,
     annualDrugDeductible: 590,
-    californiaBenchmark: true,
+    benchmark: true,
   },
   {
     contractId: "S5601",
@@ -84,7 +122,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 38.9,
     annualDrugDeductible: 200,
-    californiaBenchmark: false,
+    benchmark: false,
   },
   {
     contractId: "S5884",
@@ -96,7 +134,7 @@ const BASE_PLANS: BasePlan[] = [
     starRating: 3.5,
     monthlyPremium: 46.2,
     annualDrugDeductible: 545,
-    californiaBenchmark: false,
+    benchmark: false,
   },
 ];
 
@@ -124,7 +162,9 @@ function networkFor(carrierName: string, pharmacy: PharmacyInput): NetworkStatus
   }
   if (carrierName.includes("UnitedHealthcare") && chain.includes("WALGREENS")) return "PREFERRED";
   if (carrierName.includes("Humana") && chain.includes("WALGREENS")) return "PREFERRED";
-  if (carrierName.includes("Alignment") && chain.includes("RITE AID")) return "OUT_OF_NETWORK";
+  if (carrierName.includes("Alignment") && chain.includes("WALMART")) return "OUT_OF_NETWORK";
+  if (carrierName.includes("Humana") && chain.includes("WALMART")) return "PREFERRED";
+  if (carrierName.includes("UnitedHealthcare") && chain.includes("KROGER")) return "PREFERRED";
   return "STANDARD";
 }
 
@@ -308,7 +348,7 @@ export function expandMedications(medications: DrugInput[]) {
   });
 }
 
-export function compareCaliforniaPlans(payload: CompareRequest): MedicarePlanComparison[] {
+export function compareSamplePlans(payload: CompareRequest): MedicarePlanComparison[] {
   const retailCount = payload.pharmacies.filter((pharmacy) => !pharmacy.isMailOrder).length;
   if (retailCount > 5) {
     throw new Error("Select at most five retail pharmacies.");
@@ -316,15 +356,16 @@ export function compareCaliforniaPlans(payload: CompareRequest): MedicarePlanCom
   const medications = expandMedications(payload.medications);
   const cap = partDCap(payload.contractYear);
   const lis = lisSchedule(payload.contractYear, payload.lisLevel as LisLevel);
-  const benchmark = BASE_PLANS.find((plan) => plan.californiaBenchmark)?.monthlyPremium ?? 0;
-  return BASE_PLANS.map((plan) => {
+  const plans = BASE_PLANS.filter((plan) => offeredIn(plan, payload.state));
+  const benchmark = plans.find((plan) => plan.benchmark)?.monthlyPremium ?? 0;
+  return plans.map((plan) => {
     const priced = { ...plan };
     let premiumNote: string | null = null;
     if (lis && plan.planType === "PDP") {
       priced.monthlyPremium = round(Math.max(0, plan.monthlyPremium - benchmark));
       priced.annualDrugDeductible = 0;
-      premiumNote = plan.californiaBenchmark
-        ? "Sample California benchmark PDP. Extra Help shows a $0 premium in this estimate."
+      premiumNote = plan.benchmark
+        ? `Sample ${payload.state ?? "regional"} benchmark PDP. Extra Help shows a $0 premium in this estimate.`
         : "Extra Help estimate: premium above the sample benchmark PDP.";
     } else if (lis) {
       priced.annualDrugDeductible = 0;

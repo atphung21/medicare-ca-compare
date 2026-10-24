@@ -1,6 +1,7 @@
+import { stateForFips } from "@/lib/us-location";
 import { CompareRequestSchema } from "@/schemas/medicare";
 import { lisSchedule, partDCap } from "@/services/lis";
-import { compareCaliforniaPlans } from "@/services/medicare-compare";
+import { compareSamplePlans } from "@/services/medicare-compare";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -11,11 +12,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
   try {
-    const plans = compareCaliforniaPlans(parsed.data);
+    const state = parsed.data.state ?? (stateForFips(parsed.data.countyFips) || undefined);
+    const plans = compareSamplePlans({ ...parsed.data, state });
     const lis = lisSchedule(parsed.data.contractYear, parsed.data.lisLevel);
     return NextResponse.json({
       sample: true,
       countyName: parsed.data.countyName,
+      state,
       zipCode: parsed.data.zipCode,
       contractYear: parsed.data.contractYear,
       partDCap: partDCap(parsed.data.contractYear),

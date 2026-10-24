@@ -71,9 +71,10 @@ export const LisLevelSchema = z.enum(["LIS_NONE", "LIS_MEDICAID", "LIS_SSI", "LI
 export type LisLevel = z.infer<typeof LisLevelSchema>;
 
 export const CompareRequestSchema = z.object({
-  zipCode: z.string().regex(/^9\d{4}$/, "Enter a 5-digit California ZIP code"),
+  zipCode: z.string().regex(/^\d{5}$/, "Enter a 5-digit ZIP code"),
   countyFips: z.string().min(5, "Choose a county"),
   countyName: z.string().min(1),
+  state: z.string().regex(/^[A-Z]{2}$/).optional(),
   contractYear: z.enum(["2026", "2027"]),
   lisLevel: LisLevelSchema.default("LIS_NONE"),
   medications: z.array(DrugInputSchema).min(1, "Add at least one medication"),
@@ -148,74 +149,15 @@ export function coarseDosageForm(label: string): DosageForm {
   return "TABLET";
 }
 
-export const CALIFORNIA_COUNTIES = [
-  { fips: "06037", name: "Los Angeles" },
-  { fips: "06059", name: "Orange" },
-  { fips: "06073", name: "San Diego" },
-  { fips: "06067", name: "Sacramento" },
-  { fips: "06001", name: "Alameda" },
-  { fips: "06075", name: "San Francisco" },
-  { fips: "06085", name: "Santa Clara" },
-  { fips: "06065", name: "Riverside" },
-  { fips: "06071", name: "San Bernardino" },
-  { fips: "06111", name: "Ventura" },
-] as const;
+const NEAREST = "Nearest store to the ZIP code";
 
-export const ZIP_COUNTY_FIPS: Record<string, string[]> = {
-  "91361": ["06111", "06037"],
-  "92704": ["06059"],
-  "92602": ["06059"],
-  "90001": ["06037"],
-  "94102": ["06075"],
-  "95814": ["06067"],
-  "92101": ["06073"],
-  "94612": ["06001"],
-  "95112": ["06085"],
-  "92501": ["06065"],
-  "92401": ["06071"],
-};
-
+/** National chains. The Medicare.gov proof picks the closest store of each chain to the ZIP code. */
 export const PHARMACY_CATALOG: PharmacyInput[] = [
-  {
-    id: "cvs-bristol",
-    name: "CVS Pharmacy",
-    chain: "CVS",
-    address: "1701 N Bristol St, Santa Ana, CA",
-    npi: "1962448571",
-    isMailOrder: false,
-  },
-  {
-    id: "walgreens-17th",
-    name: "Walgreens",
-    chain: "Walgreens",
-    address: "1700 E 17th St, Santa Ana, CA",
-    npi: "1487654321",
-    isMailOrder: false,
-  },
-  {
-    id: "riteaid-main",
-    name: "Rite Aid",
-    chain: "Rite Aid",
-    address: "801 N Main St, Santa Ana, CA",
-    npi: "1578901234",
-    isMailOrder: false,
-  },
-  {
-    id: "costco-tustin",
-    name: "Costco Pharmacy",
-    chain: "Costco",
-    address: "2700 Park Ave, Tustin, CA",
-    npi: "1654321098",
-    isMailOrder: false,
-  },
-  {
-    id: "ralphs-harbor",
-    name: "Ralphs Pharmacy",
-    chain: "Ralphs",
-    address: "2000 N Harbor Blvd, Santa Ana, CA",
-    npi: "1743201987",
-    isMailOrder: false,
-  },
+  { id: "cvs", name: "CVS Pharmacy", chain: "CVS", address: NEAREST, isMailOrder: false },
+  { id: "walgreens", name: "Walgreens", chain: "Walgreens", address: NEAREST, isMailOrder: false },
+  { id: "walmart", name: "Walmart Pharmacy", chain: "Walmart", address: NEAREST, isMailOrder: false },
+  { id: "costco", name: "Costco Pharmacy", chain: "Costco", address: NEAREST, isMailOrder: false },
+  { id: "kroger", name: "Kroger Pharmacy", chain: "Kroger", address: NEAREST, isMailOrder: false },
   {
     id: "mail-order",
     name: "Plan mail order",
@@ -224,9 +166,3 @@ export const PHARMACY_CATALOG: PharmacyInput[] = [
     isMailOrder: true,
   },
 ];
-
-export function countiesForZip(zipCode: string) {
-  const fips = ZIP_COUNTY_FIPS[zipCode];
-  if (!fips) return [...CALIFORNIA_COUNTIES];
-  return CALIFORNIA_COUNTIES.filter((county) => fips.includes(county.fips));
-}

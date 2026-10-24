@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "California Medicare drug comparison",
+  title: "Medicare drug comparison",
   description:
-    "Internal planning estimates for California Medicare Advantage and Part D drug costs across pharmacies.",
+    "Internal planning estimates for Medicare Advantage and Part D drug costs across pharmacies in any US ZIP code.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

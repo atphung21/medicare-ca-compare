@@ -1,3 +1,4 @@
+import { countyBaseName } from "@/lib/us-location";
 import type {
   CompareRequest,
   DrugInput,
@@ -469,9 +470,12 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
       .or(page.getByLabel(yearLabel));
     await clickIfVisible(page, year, 400);
   }
-  const county = page
-    .getByRole("radio", { name: new RegExp(input.countyName, "i") })
-    .or(page.getByLabel(new RegExp(input.countyName, "i")));
+  const countyRadio = (pattern: RegExp) =>
+    page.getByRole("radio", { name: pattern }).or(page.getByLabel(pattern));
+  const fullCounty = countyRadio(new RegExp(escapeRegExp(input.countyName), "i"));
+  const county = (await isVisible(fullCounty, 300))
+    ? fullCounty
+    : countyRadio(new RegExp(`\\b${escapeRegExp(countyBaseName(input.countyName))}\\b`, "i"));
   const continueButton = page
     .getByRole("button", { name: /^continue$/i })
     .filter({ visible: true })
@@ -738,10 +742,14 @@ async function confirmPharmacyLocation(page: Page, input: ProofCaptureInput) {
   const zip = dialog.locator('input[type="text"]').first();
   await zip.fill(input.zipCode, { timeout: 1500 });
   await dialog.getByRole("button", { name: /^add$/i }).click({ timeout: 1500 });
-  const countyName = input.countyName.split(",")[0];
-  const county = dialog
+  const fullCounty = dialog
     .locator("label")
-    .filter({ hasText: new RegExp(escapeRegExp(countyName), "i") });
+    .filter({ hasText: new RegExp(escapeRegExp(input.countyName), "i") });
+  const county = (await isVisible(fullCounty, 300))
+    ? fullCounty
+    : dialog.locator("label").filter({
+        hasText: new RegExp(`\\b${escapeRegExp(countyBaseName(input.countyName))}\\b`, "i"),
+      });
   const continueButton = dialog.locator(".e2e-state-validator-continue");
   if (await isVisible(county, 300))
     await county

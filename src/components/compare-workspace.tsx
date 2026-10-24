@@ -10,11 +10,9 @@ import {
   formularyFormTip,
   splitPharmacyTip,
 } from "@/lib/insights";
+import type { ZipLocation } from "@/lib/us-location";
 import {
-  CALIFORNIA_COUNTIES,
-  countiesForZip,
   PHARMACY_CATALOG,
-  ZIP_COUNTY_FIPS,
   type CompareRequest,
   type DosageForm,
   type DrugInput,
@@ -145,34 +143,11 @@ function networkLabel(status: PharmacyPlanQuote["networkStatus"]) {
   return "Out of network";
 }
 
-async function lookupCounty(zipCode: string, signal: AbortSignal) {
-  const zipResponse = await fetch(`https://api.zippopotam.us/us/${zipCode}`, {
-    signal,
-  });
-  if (!zipResponse.ok) return null;
-  const zipBody = (await zipResponse.json()) as {
-    places?: {
-      latitude: string;
-      longitude: string;
-      "state abbreviation": string;
-    }[];
-  };
-  const place = zipBody.places?.[0];
-  if (!place || place["state abbreviation"] !== "CA") return null;
-  const countyResponse = await fetch(
-    `https://geo.fcc.gov/api/census/block/find?latitude=${place.latitude}&longitude=${place.longitude}&format=json`,
-    { signal },
-  );
-  if (!countyResponse.ok) return null;
-  const countyBody = (await countyResponse.json()) as {
-    County?: { FIPS?: string; name?: string };
-  };
-  const fips = countyBody.County?.FIPS;
-  if (!fips) return null;
-  const known = CALIFORNIA_COUNTIES.find((county) => county.fips === fips);
-  const name =
-    known?.name ?? (countyBody.County?.name ?? "").replace(/ County$/i, "");
-  return name ? { fips, name } : null;
+async function lookupLocation(zipCode: string, signal: AbortSignal) {
+  const response = await fetch(`/api/location?zip=${zipCode}`, { signal });
+  const body = (await response.json()) as ZipLocation & { error?: string };
+  if (!response.ok) throw new Error(body.error ?? "That ZIP code was not found.");
+  return body;
 }
 
 type ProofResult = {
@@ -223,8 +198,8 @@ export function CompareWorkspace() {
     Record<string, ResolvedVariant[]>
   >({});
   const [selectedPharmacyIds, setSelectedPharmacyIds] = useState<string[]>([
-    "cvs-bristol",
-    "walgreens-17th",
+    "cvs",
+    "walgreens",
     "mail-order",
   ]);
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
@@ -242,7 +217,7 @@ export function CompareWorkspace() {
   const [maxPremium, setMaxPremium] = useState("");
   const [deductible, setDeductible] = useState<DeductibleFilter>("any");
   const [network, setNetwork] = useState<NetworkFilter>("any");
-  const [preferredPharmacyId, setPreferredPharmacyId] = useState("cvs-bristol");
+  const [preferredPharmacyId, setPreferredPharmacyId] = useState("cvs");
   const [coveredOnly, setCoveredOnly] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("total");
   const [comparePharmacyId, setComparePharmacyId] = useState("cheapest");
@@ -255,20 +230,15 @@ export function CompareWorkspace() {
   const [proofs, setProofs] = useState<Record<string, ProofResult>>({});
   const [proofLoading, setProofLoading] = useState(false);
   const [openProofKey, setOpenProofKey] = useState<string | null>(null);
-  const [extraCounty, setExtraCounty] = useState<{
-    fips: string;
-    name: string;
-  } | null>(null);
+  const [location, setLocation] = useState<ZipLocation | null>(null);
+  const [locationError, setLocationError] = useState("");
   const [formVersion, setFormVersion] = useState(0);
   const [drugNotes, setDrugNotes] = useState<Record<string, DrugReviewNote>>(
     {},
   );
 
-  const counties = countiesForZip(zipCode);
-  const countyChoices =
-    extraCounty && !counties.some((county) => county.fips === extraCounty.fips)
-      ? [extraCounty, ...counties]
-      : counties;
+  const counties = location?.zipCode === zipCode ? location.counties : [];
+  const countyChoices = counties;
   const pharmacyChoices = [...PHARMACY_CATALOG, ...customPharmacies];
   const selectedPharmacies = pharmacyChoices.filter((pharmacy) =>
     selectedPharmacyIds.includes(pharmacy.id),
@@ -356,30 +326,23 @@ export function CompareWorkspace() {
 
   useEffect(() => {
     if (!/^\d{5}$/.test(zipCode)) return;
-    const known = ZIP_COUNTY_FIPS[zipCode];
-    if (known?.length === 1) {
-      setExtraCounty(null);
-      setCountyFips(known[0]);
-      return;
-    }
     const controller = new AbortController();
-    void lookupCounty(zipCode, controller.signal)
-      .then((county) => {
-        const allowed = known ?? null;
-        if (county && (!allowed || allowed.includes(county.fips))) {
-          setExtraCounty(
-            CALIFORNIA_COUNTIES.some((item) => item.fips === county.fips)
-              ? null
-              : county,
-          );
-          setCountyFips(county.fips);
-          return;
-        }
-        if (known?.[0]) setCountyFips(known[0]);
+    void lookupLocation(zipCode, controller.signal)
+      .then((found) => {
+        setLocation(found);
+        setLocationError("");
+        setCountyFips((current) =>
+          found.counties.some((county) => county.fips === current)
+            ? current
+            : (found.counties[0]?.fips ?? ""),
+        );
       })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
-        if (known?.[0]) setCountyFips(known[0]);
+        setLocation(null);
+        setLocationError(
+          error instanceof Error ? error.message : "That ZIP code was not found.",
+        );
       });
     return () => controller.abort();
   }, [zipCode]);
@@ -387,14 +350,15 @@ export function CompareWorkspace() {
   function resetPage() {
     setZipCode("");
     setCountyFips("");
-    setExtraCounty(null);
+    setLocation(null);
+    setLocationError("");
     setContractYear("2027");
     setLisLevel("LIS_NONE");
     setShowMppp(false);
     setMedications([]);
     setDrugNotes({});
     setFormOptions({});
-    setSelectedPharmacyIds(["cvs-bristol", "walgreens-17th", "mail-order"]);
+    setSelectedPharmacyIds(["cvs", "walgreens", "mail-order"]);
     setCustomPharmacies([]);
     setCustomPharmacyName("");
     setPlans([]);
@@ -407,7 +371,7 @@ export function CompareWorkspace() {
     setMaxPremium("");
     setDeductible("any");
     setNetwork("any");
-    setPreferredPharmacyId("cvs-bristol");
+    setPreferredPharmacyId("cvs");
     setCoveredOnly(true);
     setSortKey("total");
     setComparePharmacyId("cheapest");
@@ -692,6 +656,7 @@ export function CompareWorkspace() {
       zipCode,
       countyFips: county.fips,
       countyName: county.name,
+      state: county.state || undefined,
       contractYear,
       lisLevel,
       medications,
@@ -712,8 +677,13 @@ export function CompareWorkspace() {
       setPlans(data.plans);
       setQuotedMeds(medications);
       setLisNote(data.lis ?? null);
-      setContext({ zipCode: data.zipCode, countyName: data.countyName });
-      setPreferredPharmacyId(selectedPharmacies[0]?.id ?? "cvs-bristol");
+      setContext({
+        zipCode: data.zipCode,
+        countyName: county.state
+          ? `${data.countyName}, ${county.state}`
+          : data.countyName,
+      });
+      setPreferredPharmacyId(selectedPharmacies[0]?.id ?? "cvs");
       setComparePharmacyId("cheapest");
       } catch {
       setError("Could not reach the comparison service.");
@@ -766,7 +736,7 @@ export function CompareWorkspace() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "california-medicare-comparison.csv";
+    link.download = `medicare-comparison-${zipCode}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -853,6 +823,7 @@ export function CompareWorkspace() {
           zipCode,
           countyFips: county.fips,
           countyName: county.name,
+          state: county.state || undefined,
           contractYear,
           lisLevel,
           medications,
@@ -902,7 +873,7 @@ export function CompareWorkspace() {
             Licensed agent planning tool
           </p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight">
-            California Medicare drug comparison
+            Medicare drug comparison
           </h1>
           <p className="mt-3 text-sm leading-6 text-stone-700">
             These figures are sample planning estimates, not a beneficiary
@@ -926,15 +897,21 @@ export function CompareWorkspace() {
           <legend className="px-1 text-sm font-semibold">Location</legend>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,0.6fr)_minmax(0,0.8fr)_minmax(0,0.55fr)_minmax(16rem,1.6fr)_auto]">
             <label className="block text-sm">
-              California ZIP
+              ZIP code
               <input
                 value={zipCode}
                 onChange={(event) =>
                   setZipCode(event.target.value.replace(/\D/g, "").slice(0, 5))
                 }
                 inputMode="numeric"
+                placeholder="Any US ZIP"
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               />
+              {locationError && zipCode.length === 5 ? (
+                <span className="mt-1 block text-xs text-[var(--warn)]">
+                  {locationError}
+                </span>
+              ) : null}
             </label>
             <label className="block text-sm">
               County
@@ -943,10 +920,12 @@ export function CompareWorkspace() {
                 onChange={(event) => setCountyFips(event.target.value)}
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               >
-                <option value="">Select a county</option>
+                <option value="">
+                  {zipCode.length === 5 ? "Select a county" : "Enter a ZIP code first"}
+                </option>
                 {countyChoices.map((county) => (
                   <option key={county.fips} value={county.fips}>
-                    {county.name}
+                    {county.state ? `${county.name}, ${county.state}` : county.name}
                   </option>
                 ))}
               </select>
@@ -1515,7 +1494,7 @@ export function CompareWorkspace() {
                   <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <h2 className="text-lg font-semibold">
-                        {context?.countyName} County · {context?.zipCode}
+                        {context?.countyName} · {context?.zipCode}
                       </h2>
                       <p className="text-sm text-stone-600">
                         {filtered.length} of {plans.length} sample plans match
