@@ -33,6 +33,9 @@ function Test-AppRunning {
   }
 }
 
+if (-not (Test-Path (Join-Path $InstallDir "package.json"))) {
+  throw "Medicare Compare is not installed in $InstallDir. Run setup-windows.ps1 to install it."
+}
 Set-Location $InstallDir
 
 if (Test-AppRunning) {
