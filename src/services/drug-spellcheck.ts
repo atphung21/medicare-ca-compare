@@ -20,11 +20,6 @@ export interface SpellCorrection {
   suggestions: SpellingSuggestion[];
 }
 
-export interface SplitDrugSpec {
-  rawLine: string;
-  text: string;
-}
-
 export const INDIVIDUAL_DRUG_CATALOG: Record<string, CatalogDrug> = {
   metformin: {
     canonicalName: "Metformin",
@@ -157,51 +152,6 @@ export const INDIVIDUAL_DRUG_CATALOG: Record<string, CatalogDrug> = {
   },
 };
 
-const EXACT_COMBO_KEYS = new Set(["amlodipine benazepril"]);
-
-interface TokenMatch {
-  token: string;
-  key: string;
-  exact: boolean;
-}
-
-interface LineParts {
-  dailyFrequency: number;
-  explicitER: boolean;
-  explicitCap: boolean;
-  explicitTab: boolean;
-  strengths: string[];
-  words: string[];
-}
-
-export function splitMedicationSpecs(line: string): SplitDrugSpec[] {
-  if (isExplicitCombo(line)) return [{ rawLine: line, text: line }];
-  const parts = lineParts(line);
-  const matches = parts.words
-    .map((token) => {
-      const best = rankDrugNames(token)[0];
-      if (!best || best.score < 0.68 || Math.abs(best.key.length - token.length) > 3) return null;
-      return { token, key: best.key, exact: best.key === token };
-    })
-    .filter((match): match is TokenMatch => match !== null);
-
-  const comboKey = matches.map((match) => match.key).join(" ");
-  const exactCombo = matches.length >= 2 && matches.every((match) => match.exact) && EXACT_COMBO_KEYS.has(comboKey);
-  if (exactCombo) return [{ rawLine: line, text: line }];
-  const splitTokens =
-    matches.length >= 2
-      ? matches
-      : parts.words.length >= 2 && parts.strengths.length >= 2
-        ? parts.words.map((token) => ({ token, key: token, exact: true }))
-        : [];
-  if (splitTokens.length < 2) return [{ rawLine: line, text: line }];
-
-  return splitTokens.map((match, index) => ({
-    rawLine: line,
-    text: singleDrugText(match.token, parts, parts.strengths[index] || parts.strengths[0] || null),
-  }));
-}
-
 export async function correctDrugToken(token: string): Promise<SpellCorrection> {
   const clean = token.toLowerCase().trim();
   if (!clean || clean.includes(" ")) return unchanged(clean || token);
@@ -290,54 +240,6 @@ function addLookAlikes(suggestions: Map<string, SpellingSuggestion>, keys: strin
   }
 }
 
-function isExplicitCombo(line: string) {
-  return /[a-z]\s*\/\s*[a-z]/i.test(line) || /\band\b/i.test(line);
-}
-
-function lineParts(line: string): LineParts {
-  let working = line.toLowerCase();
-  let dailyFrequency = 1;
-  const slashFrequency = working.match(/(\d+)\s*(?:\/|per|x)\s*(?:day|d|daily)\b/i);
-  if (slashFrequency) {
-    dailyFrequency = Number(slashFrequency[1]) || 1;
-    working = working.replace(slashFrequency[0], " ");
-  } else if (/\b(twice\s+daily|twice\s+a\s+day|bid|2x)\b/i.test(working)) {
-    dailyFrequency = 2;
-    working = working.replace(/\b(twice\s+daily|twice\s+a\s+day|bid|2x)\b/gi, " ");
-  } else if (/\b(three\s+times(?:\s+daily)?|tid|3x)\b/i.test(working)) {
-    dailyFrequency = 3;
-    working = working.replace(/\b(three\s+times(?:\s+daily)?|tid|3x)\b/gi, " ");
-  } else if (/\b(once\s+daily|daily|qd|1x)\b/i.test(working)) {
-    dailyFrequency = 1;
-    working = working.replace(/\b(once\s+daily|daily|qd|1x)\b/gi, " ");
-  }
-
-  const strengths = [...working.matchAll(/(\d+(?:\.\d+)?)\s*(mg|mcg|ml|g|units)?/gi)].map(
-    (match) => `${match[1]} ${(match[2] || "mg").toLowerCase()}`,
-  );
-  const words = working
-    .replace(/(\d+(?:\.\d+)?)\s*(mg|mcg|ml|g|units)?/gi, " ")
-    .replace(/\b(er|xr|sr|xl|extended|tab|tabs|tablet|tablets|cap|caps|capsule|capsules|oral|hcl|hyclate|sodium)\b/gi, " ")
-    .replace(/[^a-z\s]/gi, " ")
-    .trim()
-    .split(/\s+/)
-    .filter((word) => word.length >= 4);
-
-  return {
-    dailyFrequency,
-    explicitER: /\b(er|xr|sr|xl|extended)\b/i.test(line),
-    explicitCap: /\b(cap|caps|capsule|capsules)\b/i.test(line),
-    explicitTab: /\b(tab|tabs|tablet|tablets)\b/i.test(line),
-    strengths,
-    words,
-  };
-}
-
-function singleDrugText(token: string, parts: LineParts, strength: string | null) {
-  const hints = [parts.explicitER ? "er" : "", parts.explicitCap ? "capsule" : "", parts.explicitTab ? "tablet" : ""].filter(Boolean);
-  return [token, strength, `${parts.dailyFrequency}/day`, ...hints].filter(Boolean).join(" ");
-}
-
 async function fetchRxNormSpellingSuggestions(word: string): Promise<string[]> {
   try {
     const spelled = await fetch(`https://rxnav.nlm.nih.gov/REST/spellingsuggestions.json?name=${encodeURIComponent(word)}`, {
@@ -381,7 +283,7 @@ function phoneticKey(word: string) {
     .replace(/(.)\1+/g, "$1");
 }
 
-function similarity(left: string, right: string) {
+export function similarity(left: string, right: string) {
   const maxLength = Math.max(left.length, right.length);
   if (maxLength === 0) return 1;
   return (maxLength - damerauLevenshtein(left, right)) / maxLength;

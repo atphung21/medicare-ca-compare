@@ -1,8 +1,15 @@
 "use client";
 
-import { ChatDrugIntake, type CheckedMedication, type DrugReviewNote } from "@/components/chat-drug-intake";
-import type { SpellingSuggestion } from "@/services/drug-spellcheck";
-import { drugsVerified, formularyFormTip, isCostCulprit, splitPharmacyTip } from "@/lib/insights";
+import {
+  ChatDrugIntake,
+  type CheckedMedication,
+  type DrugReviewNote,
+} from "@/components/chat-drug-intake";
+import {
+  drugsVerified,
+  formularyFormTip,
+  splitPharmacyTip,
+} from "@/lib/insights";
 import {
   CALIFORNIA_COUNTIES,
   countiesForZip,
@@ -11,16 +18,16 @@ import {
   type CompareRequest,
   type DosageForm,
   type DrugInput,
-  type DrugPlanBreakdown,
   type LisLevel,
-  type PlanCategory,
   type MedicarePlanComparison,
   type PharmacyInput,
   type PharmacyPlanQuote,
+  type PlanCategory,
   type ResolvedVariant,
 } from "@/schemas/medicare";
+import type { SpellingSuggestion } from "@/services/drug-spellcheck";
 import { partDCap } from "@/services/lis";
-import { Fragment, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 const FORMS: { value: DosageForm; label: string }[] = [
   { value: "TABLET", label: "Tablet" },
@@ -52,12 +59,23 @@ function blankNote(name: string): DrugReviewNote {
 }
 
 function sameStrength(left: string, right: string) {
-  return left.toLowerCase().replace(/\s+/g, "") === right.toLowerCase().replace(/\s+/g, "");
+  return (
+    left.toLowerCase().replace(/\s+/g, "") ===
+    right.toLowerCase().replace(/\s+/g, "")
+  );
 }
 
 function timesPerDay(drug: DrugInput) {
   const days = drug.refillFrequencyMonths === "3" ? 90 : 30;
   return Math.max(1, Math.round(drug.quantityPerFill / days));
+}
+
+function quantityLabel(drug: DrugInput) {
+  const days = drug.refillFrequencyMonths === "3" ? 90 : 30;
+  const perDay = drug.quantityPerFill / days;
+  if ([1, 2, 3].includes(perDay))
+    return `${perDay} ${perDay === 1 ? "time" : "times"} a day`;
+  return `${drug.quantityPerFill} per ${days}-day fill`;
 }
 
 function newDrug(): DrugInput {
@@ -96,11 +114,16 @@ function inNetwork(quote: PharmacyPlanQuote) {
 
 function comparisonQuote(plan: MedicarePlanComparison, pharmacyId: string) {
   if (pharmacyId !== "cheapest") {
-    return plan.pharmacyQuotes.find((quote) => quote.pharmacyId === pharmacyId) ?? plan.pharmacyQuotes[0];
+    return (
+      plan.pharmacyQuotes.find((quote) => quote.pharmacyId === pharmacyId) ??
+      plan.pharmacyQuotes[0]
+    );
   }
   const eligible = plan.pharmacyQuotes.filter(inNetwork);
   const pool = eligible.length ? eligible : plan.pharmacyQuotes;
-  return pool.reduce((best, quote) => (quote.totalAnnualCost < best.totalAnnualCost ? quote : best));
+  return pool.reduce((best, quote) =>
+    quote.totalAnnualCost < best.totalAnnualCost ? quote : best,
+  );
 }
 
 function networkLabel(status: PharmacyPlanQuote["networkStatus"]) {
@@ -110,9 +133,17 @@ function networkLabel(status: PharmacyPlanQuote["networkStatus"]) {
 }
 
 async function lookupCounty(zipCode: string, signal: AbortSignal) {
-  const zipResponse = await fetch(`https://api.zippopotam.us/us/${zipCode}`, { signal });
+  const zipResponse = await fetch(`https://api.zippopotam.us/us/${zipCode}`, {
+    signal,
+  });
   if (!zipResponse.ok) return null;
-  const zipBody = (await zipResponse.json()) as { places?: { latitude: string; longitude: string; "state abbreviation": string }[] };
+  const zipBody = (await zipResponse.json()) as {
+    places?: {
+      latitude: string;
+      longitude: string;
+      "state abbreviation": string;
+    }[];
+  };
   const place = zipBody.places?.[0];
   if (!place || place["state abbreviation"] !== "CA") return null;
   const countyResponse = await fetch(
@@ -120,21 +151,46 @@ async function lookupCounty(zipCode: string, signal: AbortSignal) {
     { signal },
   );
   if (!countyResponse.ok) return null;
-  const countyBody = (await countyResponse.json()) as { County?: { FIPS?: string; name?: string } };
+  const countyBody = (await countyResponse.json()) as {
+    County?: { FIPS?: string; name?: string };
+  };
   const fips = countyBody.County?.FIPS;
   if (!fips) return null;
   const known = CALIFORNIA_COUNTIES.find((county) => county.fips === fips);
-  const name = known?.name ?? (countyBody.County?.name ?? "").replace(/ County$/i, "");
+  const name =
+    known?.name ?? (countyBody.County?.name ?? "").replace(/ County$/i, "");
   return name ? { fips, name } : null;
 }
 
-function proofShots(data: { proofId?: string; imageFile?: string; images?: { label: string; file: string }[] }) {
+type ProofResult = {
+  id: string | null;
+  url: string;
+  error: string;
+  pdf: boolean;
+  images: { label: string; src: string }[];
+};
+
+function proofShots(data: {
+  proofId?: string;
+  imageFile?: string;
+  images?: { label: string; file: string }[];
+}) {
   if (!data.proofId) return [];
   const listed = Array.isArray(data.images) ? data.images : [];
   if (listed.length > 0) {
-    return listed.map((image) => ({ label: image.label, src: `/api/medicare/proof/${data.proofId}/${image.file}` }));
+    return listed.map((image) => ({
+      label: image.label,
+      src: `/api/medicare/proof/${data.proofId}/${image.file}`,
+    }));
   }
-  return data.imageFile ? [{ label: "Medicare.gov proof", src: `/api/medicare/proof/${data.proofId}/${data.imageFile}` }] : [];
+  return data.imageFile
+    ? [
+        {
+          label: "Medicare.gov proof",
+          src: `/api/medicare/proof/${data.proofId}/${data.imageFile}`,
+        },
+      ]
+    : [];
 }
 
 export function CompareWorkspace() {
@@ -144,7 +200,9 @@ export function CompareWorkspace() {
   const [lisLevel, setLisLevel] = useState<LisLevel>("LIS_NONE");
   const [showMppp, setShowMppp] = useState(false);
   const [medications, setMedications] = useState<DrugInput[]>([]);
-  const [formOptions, setFormOptions] = useState<Record<string, ResolvedVariant[]>>({});
+  const [formOptions, setFormOptions] = useState<
+    Record<string, ResolvedVariant[]>
+  >({});
   const [selectedPharmacyIds, setSelectedPharmacyIds] = useState<string[]>([
     "cvs-bristol",
     "walgreens-17th",
@@ -153,7 +211,10 @@ export function CompareWorkspace() {
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
   const [customPharmacyName, setCustomPharmacyName] = useState("");
   const [plans, setPlans] = useState<MedicarePlanComparison[]>([]);
-  const [context, setContext] = useState<{ zipCode: string; countyName: string } | null>(null);
+  const [context, setContext] = useState<{
+    zipCode: string;
+    countyName: string;
+  } | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [planType, setPlanType] = useState<PlanCategory>("ALL");
@@ -166,31 +227,56 @@ export function CompareWorkspace() {
   const [coveredOnly, setCoveredOnly] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("total");
   const [comparePharmacyId, setComparePharmacyId] = useState("cheapest");
-  const [openPlan, setOpenPlan] = useState<string | null>(null);
   const [lisNote, setLisNote] = useState<LisPayload | null>(null);
   const [quotedMeds, setQuotedMeds] = useState<DrugInput[]>([]);
-  const [visionMessage, setVisionMessage] = useState("Checking pill-bottle intake…");
+  const [visionMessage, setVisionMessage] = useState(
+    "Checking pill-bottle intake…",
+  );
   const [extracting, setExtracting] = useState(false);
-  const [proofId, setProofId] = useState<string | null>(null);
-  const [proofUrl, setProofUrl] = useState("");
-  const [proofError, setProofError] = useState("");
+  const [proofs, setProofs] = useState<Record<string, ProofResult>>({});
   const [proofLoading, setProofLoading] = useState(false);
-  const [proofImage, setProofImage] = useState<string | null>(null);
-  const [proofImages, setProofImages] = useState<{ label: string; src: string }[]>([]);
-  const [proofPdf, setProofPdf] = useState(false);
-  const [alternatives, setAlternatives] = useState<Record<string, { name: string; rxcui: string; className: string }[]>>({});
-  const [extraCounty, setExtraCounty] = useState<{ fips: string; name: string } | null>(null);
+  const [openProofKey, setOpenProofKey] = useState<string | null>(null);
+  const [extraCounty, setExtraCounty] = useState<{
+    fips: string;
+    name: string;
+  } | null>(null);
   const [formVersion, setFormVersion] = useState(0);
-  const [drugNotes, setDrugNotes] = useState<Record<string, DrugReviewNote>>({});
+  const [drugNotes, setDrugNotes] = useState<Record<string, DrugReviewNote>>(
+    {},
+  );
 
   const counties = countiesForZip(zipCode);
-  const countyChoices = extraCounty && !counties.some((county) => county.fips === extraCounty.fips) ? [extraCounty, ...counties] : counties;
+  const countyChoices =
+    extraCounty && !counties.some((county) => county.fips === extraCounty.fips)
+      ? [extraCounty, ...counties]
+      : counties;
   const pharmacyChoices = [...PHARMACY_CATALOG, ...customPharmacies];
-  const selectedPharmacies = pharmacyChoices.filter((pharmacy) => selectedPharmacyIds.includes(pharmacy.id));
-  const retailCount = selectedPharmacies.filter((pharmacy) => !pharmacy.isMailOrder).length;
+  const selectedPharmacies = pharmacyChoices.filter((pharmacy) =>
+    selectedPharmacyIds.includes(pharmacy.id),
+  );
+  const proofKey = JSON.stringify([
+    zipCode,
+    countyFips,
+    contractYear,
+    lisLevel,
+    planType,
+    medications,
+    selectedPharmacyIds,
+  ]);
+  const proof = proofs[proofKey];
+  const openProof = openProofKey === proofKey ? proof : undefined;
+  const retailCount = selectedPharmacies.filter(
+    (pharmacy) => !pharmacy.isMailOrder,
+  ).length;
   const filterPharmacies =
-    plans[0]?.pharmacyQuotes.map((quote) => ({ id: quote.pharmacyId, name: quote.pharmacyName })) ??
-    selectedPharmacies.map((pharmacy) => ({ id: pharmacy.id, name: pharmacy.name }));
+    plans[0]?.pharmacyQuotes.map((quote) => ({
+      id: quote.pharmacyId,
+      name: quote.pharmacyName,
+    })) ??
+    selectedPharmacies.map((pharmacy) => ({
+      id: pharmacy.id,
+      name: pharmacy.name,
+    }));
 
   const filtered = useMemo(() => {
     const premiumCap = maxPremium === "" ? null : Number(maxPremium);
@@ -198,38 +284,50 @@ export function CompareWorkspace() {
       if (planType !== "ALL" && plan.planType !== planType) return false;
       if (carrier !== "ALL" && plan.carrierName !== carrier) return false;
       if (plan.starRating < minStars) return false;
-      if (premiumCap !== null && !Number.isNaN(premiumCap) && plan.monthlyPremium > premiumCap) return false;
-      if (deductible === "zero" && plan.annualDrugDeductible !== 0) return false;
+      if (
+        premiumCap !== null &&
+        !Number.isNaN(premiumCap) &&
+        plan.monthlyPremium > premiumCap
+      )
+        return false;
+      if (deductible === "zero" && plan.annualDrugDeductible !== 0)
+        return false;
       if (coveredOnly && !coversFormulary(plan)) return false;
       if (network === "preferred") {
-        const quote = plan.pharmacyQuotes.find((item) => item.pharmacyId === preferredPharmacyId);
+        const quote = plan.pharmacyQuotes.find(
+          (item) => item.pharmacyId === preferredPharmacyId,
+        );
         if (!quote || quote.networkStatus !== "PREFERRED") return false;
       }
-      if (network === "all-in-network" && plan.pharmacyQuotes.some((quote) => !inNetwork(quote))) return false;
+      if (
+        network === "all-in-network" &&
+        plan.pharmacyQuotes.some((quote) => !inNetwork(quote))
+      )
+        return false;
       return true;
     });
     rows.sort((a, b) => {
       const left = comparisonQuote(a, comparePharmacyId);
       const right = comparisonQuote(b, comparePharmacyId);
       if (sortKey === "premium") return a.monthlyPremium - b.monthlyPremium;
-      if (sortKey === "drug") return left.annualDrugCostOop - right.annualDrugCostOop;
+      if (sortKey === "drug")
+        return left.annualDrugCostOop - right.annualDrugCostOop;
       return left.totalAnnualCost - right.totalAnnualCost;
     });
     return rows;
-  }, [plans, planType, carrier, minStars, maxPremium, deductible, coveredOnly, network, preferredPharmacyId, sortKey, comparePharmacyId]);
-
-  const cheapest = useMemo(() => {
-    let best: { planId: string; pharmacyId: string; cost: number } | null = null;
-    for (const plan of filtered) {
-      for (const quote of plan.pharmacyQuotes) {
-        if (!inNetwork(quote)) continue;
-        if (!best || quote.annualDrugCostOop < best.cost) {
-          best = { planId: `${plan.contractId}-${plan.planId}`, pharmacyId: quote.pharmacyId, cost: quote.annualDrugCostOop };
-        }
-      }
-    }
-    return best;
-  }, [filtered]);
+  }, [
+    plans,
+    planType,
+    carrier,
+    minStars,
+    maxPremium,
+    deductible,
+    coveredOnly,
+    network,
+    preferredPharmacyId,
+    sortKey,
+    comparePharmacyId,
+  ]);
 
   const carriers = [...new Set(plans.map((plan) => plan.carrierName))];
 
@@ -246,7 +344,11 @@ export function CompareWorkspace() {
       .then((county) => {
         const allowed = known ?? null;
         if (county && (!allowed || allowed.includes(county.fips))) {
-          setExtraCounty(CALIFORNIA_COUNTIES.some((item) => item.fips === county.fips) ? null : county);
+          setExtraCounty(
+            CALIFORNIA_COUNTIES.some((item) => item.fips === county.fips)
+              ? null
+              : county,
+          );
           setCountyFips(county.fips);
           return;
         }
@@ -286,49 +388,52 @@ export function CompareWorkspace() {
     setCoveredOnly(true);
     setSortKey("total");
     setComparePharmacyId("cheapest");
-    setOpenPlan(null);
     setLisNote(null);
     setQuotedMeds([]);
-    setProofId(null);
-    setProofUrl("");
-    setProofError("");
+    setProofs({});
     setProofLoading(false);
-    setProofImage(null);
-    setProofPdf(false);
-    setAlternatives({});
+    setOpenProofKey(null);
     setFormVersion((version) => version + 1);
   }
 
   function updateDrug(id: string, patch: Partial<DrugInput>) {
-    setMedications((current) => current.map((drug) => (drug.id === id ? { ...drug, ...patch } : drug)));
+    setMedications((current) =>
+      current.map((drug) => (drug.id === id ? { ...drug, ...patch } : drug)),
+    );
   }
 
   function applyResolution(id: string, resolution: ResolutionPayload) {
     const forms = resolution.availableFormsForStrength;
     setFormOptions((current) => ({ ...current, [id]: forms }));
-    const locked = resolution.status === "AUTO_LOCKED" ? resolution.selectedVariant : null;
-    updateDrug(id, locked
-      ? {
-          resolutionStatus: resolution.status,
-          rxcui: locked.rxcui,
-          resolvedName: locked.fullName,
-          dosageForm: locked.coarseForm,
-          dosageFormLabel: locked.dosageForm,
-          isBrand: locked.isBrand,
-          compareBothForms: false,
-          alternate: undefined,
-        }
-      : {
-          resolutionStatus: resolution.status,
-          rxcui: undefined,
-          resolvedName: undefined,
-          compareBothForms: false,
-          alternate: undefined,
-        });
+    const locked =
+      resolution.status === "AUTO_LOCKED" ? resolution.selectedVariant : null;
+    updateDrug(
+      id,
+      locked
+        ? {
+            resolutionStatus: resolution.status,
+            rxcui: locked.rxcui,
+            resolvedName: locked.fullName,
+            dosageForm: locked.coarseForm,
+            dosageFormLabel: locked.dosageForm,
+            isBrand: locked.isBrand,
+            compareBothForms: false,
+            alternate: undefined,
+          }
+        : {
+            resolutionStatus: resolution.status,
+            rxcui: undefined,
+            resolvedName: undefined,
+            compareBothForms: false,
+            alternate: undefined,
+          },
+    );
   }
 
   async function resolveDrug(drug: DrugInput) {
-    const query = [drug.ndc, drug.name, drug.strength].filter(Boolean).join(" ");
+    const query = [drug.ndc, drug.name, drug.strength]
+      .filter(Boolean)
+      .join(" ");
     if (query.trim().length < 2) return;
     const response = await fetch("/api/medicare/resolve-drug", {
       method: "POST",
@@ -344,14 +449,18 @@ export function CompareWorkspace() {
   }
 
   function selectVariant(drug: DrugInput, variant: ResolvedVariant) {
-    const others = (formOptions[drug.id] ?? []).filter((item) => item.dosageForm !== variant.dosageForm);
+    const others = (formOptions[drug.id] ?? []).filter(
+      (item) => item.dosageForm !== variant.dosageForm,
+    );
     updateDrug(drug.id, {
       rxcui: variant.rxcui,
       resolvedName: variant.fullName,
       dosageForm: variant.coarseForm,
       dosageFormLabel: variant.dosageForm,
       isBrand: variant.isBrand,
-      resolutionStatus: drug.compareBothForms ? "AMBIGUOUS_FORM" : "AUTO_LOCKED",
+      resolutionStatus: drug.compareBothForms
+        ? "AMBIGUOUS_FORM"
+        : "AUTO_LOCKED",
       strength: drug.strength || variant.strength,
       alternate: drug.compareBothForms ? others[0] : undefined,
     });
@@ -365,12 +474,19 @@ export function CompareWorkspace() {
       if (item.forms.length > 0) forms[item.drug.id] = item.forms;
     }
     setMedications(items.map((item) => item.drug));
+    setProofs({});
+    setOpenProofKey(null);
     setDrugNotes(notes);
     setFormOptions(forms);
     setError("");
     for (const item of items) {
       const drug = item.drug;
-      if (drug.name.trim() && drug.strength.trim() && !drug.rxcui && drug.resolutionStatus !== "AMBIGUOUS_FORM") {
+      if (
+        drug.name.trim() &&
+        drug.strength.trim() &&
+        !drug.rxcui &&
+        drug.resolutionStatus !== "AMBIGUOUS_FORM"
+      ) {
         void resolveDrug(drug);
       }
     }
@@ -386,17 +502,28 @@ export function CompareWorkspace() {
   }
 
   function pickStrength(drug: DrugInput, label: string) {
-    const next = { ...drug, strength: label, resolutionStatus: "UNRESOLVED" as const, rxcui: undefined, resolvedName: undefined };
+    const next = {
+      ...drug,
+      strength: label,
+      resolutionStatus: "UNRESOLVED" as const,
+      rxcui: undefined,
+      resolvedName: undefined,
+    };
     updateDrug(drug.id, next);
     setDrugNotes((current) => ({
       ...current,
-      [drug.id]: { ...(current[drug.id] ?? blankNote(drug.name)), strengthChoices: [] },
+      [drug.id]: {
+        ...(current[drug.id] ?? blankNote(drug.name)),
+        strengthChoices: [],
+      },
     }));
     void resolveDrug(next);
   }
 
   function chooseSpelling(drug: DrugInput, suggestion: SpellingSuggestion) {
-    const kept = suggestion.strengths.find((choice) => sameStrength(choice, drug.strength));
+    const kept = suggestion.strengths.find((choice) =>
+      sameStrength(choice, drug.strength),
+    );
     const next: DrugInput = {
       ...drug,
       name: suggestion.drugName,
@@ -420,21 +547,35 @@ export function CompareWorkspace() {
   }
 
   function setTimesPerDay(drug: DrugInput, times: number) {
-    updateDrug(drug.id, { quantityPerFill: times * 30, refillFrequencyMonths: "1" });
+    updateDrug(drug.id, {
+      quantityPerFill: times * 30,
+      refillFrequencyMonths: "1",
+    });
   }
 
   useEffect(() => {
     fetch("/api/medicare/extract-meds")
       .then((response) => response.json())
-      .then((data) => setVisionMessage(data.message ?? "Drop a pill-bottle photo or medication PDF."))
-      .catch(() => setVisionMessage("Pill-bottle intake is unavailable. The manual drug form still works."));
+      .then((data) =>
+        setVisionMessage(
+          data.message ?? "Drop a pill-bottle photo or medication PDF.",
+        ),
+      )
+      .catch(() =>
+        setVisionMessage(
+          "Pill-bottle intake is unavailable. The manual drug form still works.",
+        ),
+      );
   }, []);
 
   function togglePharmacy(pharmacy: PharmacyInput) {
     setSelectedPharmacyIds((current) => {
-      if (current.includes(pharmacy.id)) return current.filter((id) => id !== pharmacy.id);
+      if (current.includes(pharmacy.id))
+        return current.filter((id) => id !== pharmacy.id);
       const next = [...current, pharmacy.id];
-      const retail = pharmacyChoices.filter((item) => next.includes(item.id) && !item.isMailOrder);
+      const retail = pharmacyChoices.filter(
+        (item) => next.includes(item.id) && !item.isMailOrder,
+      );
       if (retail.length > 5) return current;
       return next;
     });
@@ -457,21 +598,29 @@ export function CompareWorkspace() {
     setCustomPharmacyName("");
     setError("");
     setSelectedPharmacyIds((current) => {
-      const retail = [...pharmacyChoices, pharmacy].filter((item) => [...current, pharmacy.id].includes(item.id) && !item.isMailOrder);
+      const retail = [...pharmacyChoices, pharmacy].filter(
+        (item) =>
+          [...current, pharmacy.id].includes(item.id) && !item.isMailOrder,
+      );
       if (retail.length > 5) return current;
       return [...current, pharmacy.id];
     });
   }
 
   function removeCustomPharmacy(id: string) {
-    setCustomPharmacies((current) => current.filter((pharmacy) => pharmacy.id !== id));
-    setSelectedPharmacyIds((current) => current.filter((selectedId) => selectedId !== id));
+    setCustomPharmacies((current) =>
+      current.filter((pharmacy) => pharmacy.id !== id),
+    );
+    setSelectedPharmacyIds((current) =>
+      current.filter((selectedId) => selectedId !== id),
+    );
   }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError("");
-    const county = counties.find((item) => item.fips === countyFips) ?? counties[0];
+    const county =
+      counties.find((item) => item.fips === countyFips) ?? counties[0];
     if (!county) {
       setError("Choose a county.");
       return;
@@ -490,16 +639,24 @@ export function CompareWorkspace() {
       setError(`Pick a strength for ${missingStrength.name}.`);
       return;
     }
-    const unresolved = medications.find((drug) => drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus);
+    const unresolved = medications.find(
+      (drug) =>
+        drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus,
+    );
     if (unresolved) {
       setError(`Pick a form for ${unresolved.name} before comparing.`);
       return;
     }
     const ambiguous = medications.find(
-      (drug) => drug.resolutionStatus === "AMBIGUOUS_FORM" && !drug.rxcui && !drug.compareBothForms,
+      (drug) =>
+        drug.resolutionStatus === "AMBIGUOUS_FORM" &&
+        !drug.rxcui &&
+        !drug.compareBothForms,
     );
     if (ambiguous) {
-      setError(`${ambiguous.name} has two forms. Pick one, or turn on Test both forms.`);
+      setError(
+        `${ambiguous.name} has two forms. Pick one, or turn on Test both forms.`,
+      );
       return;
     }
     if (selectedPharmacies.length === 0) {
@@ -533,8 +690,7 @@ export function CompareWorkspace() {
       setContext({ zipCode: data.zipCode, countyName: data.countyName });
       setPreferredPharmacyId(selectedPharmacies[0]?.id ?? "cvs-bristol");
       setComparePharmacyId("cheapest");
-      setOpenPlan(null);
-    } catch {
+      } catch {
       setError("Could not reach the comparison service.");
     } finally {
       setLoading(false);
@@ -542,11 +698,24 @@ export function CompareWorkspace() {
   }
 
   function exportCsv() {
-    const pharmacyHeaders = (plans[0]?.pharmacyQuotes ?? []).flatMap((quote) => [
-      `${quote.pharmacyName} network`,
-      `${quote.pharmacyName} annual drug cost`,
-    ]);
-    const header = ["Plan", "Carrier", "Type", "Stars", "Monthly premium", "Deductible", "Comparison pharmacy", "Drug cost", "Total annual", ...pharmacyHeaders];
+    const pharmacyHeaders = (plans[0]?.pharmacyQuotes ?? []).flatMap(
+      (quote) => [
+        `${quote.pharmacyName} network`,
+        `${quote.pharmacyName} annual drug cost`,
+      ],
+    );
+    const header = [
+      "Plan",
+      "Carrier",
+      "Type",
+      "Stars",
+      "Monthly premium",
+      "Deductible",
+      "Comparison pharmacy",
+      "Drug cost",
+      "Total annual",
+      ...pharmacyHeaders,
+    ];
     const lines = filtered.map((plan) => {
       const quote = comparisonQuote(plan, comparePharmacyId);
       const cells = [
@@ -559,11 +728,16 @@ export function CompareWorkspace() {
         quote.pharmacyName,
         String(quote.annualDrugCostOop),
         String(quote.totalAnnualCost),
-        ...plan.pharmacyQuotes.flatMap((item) => [networkLabel(item.networkStatus), String(item.annualDrugCostOop)]),
+        ...plan.pharmacyQuotes.flatMap((item) => [
+          networkLabel(item.networkStatus),
+          String(item.annualDrugCostOop),
+        ]),
       ];
       return cells.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(",");
     });
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
+    const blob = new Blob([[header.join(","), ...lines].join("\n")], {
+      type: "text/csv",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -578,40 +752,54 @@ export function CompareWorkspace() {
     const body = new FormData();
     body.set("file", file);
     try {
-      const response = await fetch("/api/medicare/extract-meds", { method: "POST", body });
+      const response = await fetch("/api/medicare/extract-meds", {
+        method: "POST",
+        body,
+      });
       const data = await response.json();
       if (!response.ok) {
         setError(data.error ?? "Could not read that file.");
         return;
       }
-      const imported: DrugInput[] = data.medications.map((item: {
-        name: string;
-        strength: string;
-        dosageForm: DosageForm;
-        dosageFormLabel?: string;
-        quantityPerFill: number;
-        refillFrequencyMonths: "1" | "3";
-        resolution: ResolutionPayload;
-      }) => {
-        const variant = item.resolution.status === "AUTO_LOCKED" ? item.resolution.selectedVariant : null;
-        const id = crypto.randomUUID();
-        setFormOptions((current) => ({ ...current, [id]: item.resolution.availableFormsForStrength }));
-        return {
-          id,
-          name: item.name,
-          strength: item.strength,
-          dosageForm: variant?.coarseForm ?? item.dosageForm,
-          dosageFormLabel: variant?.dosageForm ?? item.dosageFormLabel,
-          quantityPerFill: item.quantityPerFill,
-          refillFrequencyMonths: item.refillFrequencyMonths,
-          acceptGeneric: variant ? !variant.isBrand : true,
-          rxcui: variant?.rxcui,
-          resolvedName: variant?.fullName,
-          isBrand: variant?.isBrand,
-          resolutionStatus: item.resolution.status,
-        } satisfies DrugInput;
-      });
-      setMedications((current) => [...current.filter((drug) => drug.name.trim()), ...imported]);
+      const imported: DrugInput[] = data.medications.map(
+        (item: {
+          name: string;
+          strength: string;
+          dosageForm: DosageForm;
+          dosageFormLabel?: string;
+          quantityPerFill: number;
+          refillFrequencyMonths: "1" | "3";
+          resolution: ResolutionPayload;
+        }) => {
+          const variant =
+            item.resolution.status === "AUTO_LOCKED"
+              ? item.resolution.selectedVariant
+              : null;
+          const id = crypto.randomUUID();
+          setFormOptions((current) => ({
+            ...current,
+            [id]: item.resolution.availableFormsForStrength,
+          }));
+          return {
+            id,
+            name: item.name,
+            strength: item.strength,
+            dosageForm: variant?.coarseForm ?? item.dosageForm,
+            dosageFormLabel: variant?.dosageForm ?? item.dosageFormLabel,
+            quantityPerFill: item.quantityPerFill,
+            refillFrequencyMonths: item.refillFrequencyMonths,
+            acceptGeneric: true,
+            rxcui: variant?.rxcui,
+            resolvedName: variant?.fullName,
+            isBrand: variant?.isBrand,
+            resolutionStatus: item.resolution.status,
+          } satisfies DrugInput;
+        },
+      );
+      setMedications((current) => [
+        ...current.filter((drug) => drug.name.trim()),
+        ...imported,
+      ]);
     } catch {
       setError("Could not read that file. The manual drug form still works.");
     } finally {
@@ -619,11 +807,19 @@ export function CompareWorkspace() {
     }
   }
 
-  async function captureProof(plan?: MedicarePlanComparison) {
-    setProofLoading(true);
-    setProofError("");
-    const county = counties.find((item) => item.fips === countyFips) ?? counties[0];
+  async function captureProof() {
+    const county =
+      counties.find((item) => item.fips === countyFips) ?? counties[0];
     if (!county) return;
+    const key = proofKey;
+    const cached = proofs[key];
+    if (cached && !cached.error) {
+      setOpenProofKey(key);
+      return;
+    }
+    setProofLoading(true);
+    setOpenProofKey(null);
+    let result: ProofResult;
     try {
       const response = await fetch("/api/medicare/proof", {
         method: "POST",
@@ -636,74 +832,64 @@ export function CompareWorkspace() {
           lisLevel,
           medications,
           pharmacies: selectedPharmacies,
-          proofId: proofId ?? undefined,
-          contractId: plan?.contractId,
-          planId: plan?.planId,
-          planTypeFilter: plan?.planType ?? planType,
+          planTypeFilter: planType,
         }),
       });
       const data = await response.json();
-      const images = proofShots(data);
-      if (!data.ok) {
-        setProofId(data.proofId ?? proofId);
-        setProofError(data.error ?? "Medicare.gov proof is unavailable.");
-        setProofUrl(data.medicareGovUrl ?? "https://www.medicare.gov/plan-compare/");
-        setProofPdf(false);
-        setProofImages(images);
-        setProofImage(images[0]?.src ?? null);
-        return;
-      }
-      setProofId(data.proofId);
-      setProofUrl(data.medicareGovUrl);
-      setProofPdf(Boolean(data.pdf));
-      setProofImages(images);
-      setProofImage(images[0]?.src ?? null);
+      result = {
+        id: data.proofId ?? null,
+        url: data.medicareGovUrl ?? "https://www.medicare.gov/plan-compare/",
+        error: data.ok
+          ? ""
+          : (data.error ?? "Medicare.gov proof is unavailable."),
+        pdf: Boolean(data.ok && data.pdf),
+        images: proofShots(data),
+      };
     } catch {
-      setProofError("Medicare.gov proof could not be captured. The sample comparison is still available.");
+      result = {
+        id: null,
+        url: "",
+        error:
+          "Medicare.gov proof could not be captured. The sample comparison is still available.",
+        pdf: false,
+        images: [],
+      };
     } finally {
       setProofLoading(false);
     }
+    setProofs((current) => ({ ...current, [key]: result }));
+    if (result.images.length > 0) setOpenProofKey(key);
   }
 
-  async function loadAlternatives(drug: DrugPlanBreakdown) {
-    if (!drug.rxcui) return;
-    const response = await fetch("/api/medicare/alternatives", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rxcui: drug.rxcui }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setError(data.error ?? "Could not load alternatives.");
-      return;
-    }
-    setAlternatives((current) => ({ ...current, [drug.rxcui ?? drug.drugId]: data.alternatives ?? [] }));
-  }
-
-  function priceAlternative(name: string) {
-    const drug = newDrug();
-    drug.name = name;
-    drug.strength = "see label";
-    setMedications((current) => [...current, drug]);
-    setError(`Added ${name}. Enter the strength, resolve the form, and compare again so the tier comes from a quote.`);
-  }
-
-  const splitTip = filtered.map((plan) => splitPharmacyTip(plan)).find(Boolean) ?? null;
-  const formTips = filtered.flatMap((plan) => formularyFormTip(plan, comparisonQuote(plan, comparePharmacyId)));
+  const splitTip =
+    filtered.map((plan) => splitPharmacyTip(plan)).find(Boolean) ?? null;
+  const formTips = filtered.flatMap((plan) =>
+    formularyFormTip(plan, comparisonQuote(plan, comparePharmacyId)),
+  );
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-      <header className="max-w-3xl">
-        <p className="text-sm font-medium tracking-wide text-[var(--accent)]">Licensed agent planning tool</p>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight">California Medicare drug comparison</h1>
-        <p className="mt-3 text-sm leading-6 text-stone-700">
-          These figures are sample planning estimates, not a beneficiary quote. Confirm the final one or two plans in
-          Medicare.gov or the agency quoting tool. Annual out-of-pocket drug costs in this sample stop at the{" "}
-          {money(partDCap(contractYear))} Part D cap for {contractYear}.
-        </p>
-      </header>
-        <button type="button" onClick={resetPage} className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium">
+        <header className="max-w-3xl">
+          <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
+            Licensed agent planning tool
+          </p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
+            California Medicare drug comparison
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-stone-700">
+            These figures are sample planning estimates, not a beneficiary
+            quote. Confirm the final one or two plans in Medicare.gov or the
+            agency quoting tool. Annual out-of-pocket drug costs in this sample
+            stop at the {money(partDCap(contractYear))} Part D cap for{" "}
+            {contractYear}.
+          </p>
+        </header>
+        <button
+          type="button"
+          onClick={resetPage}
+          className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
+        >
           Reset form
         </button>
       </div>
@@ -716,7 +902,9 @@ export function CompareWorkspace() {
               California ZIP
               <input
                 value={zipCode}
-                onChange={(event) => setZipCode(event.target.value.replace(/\D/g, "").slice(0, 5))}
+                onChange={(event) =>
+                  setZipCode(event.target.value.replace(/\D/g, "").slice(0, 5))
+                }
                 inputMode="numeric"
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               />
@@ -740,7 +928,9 @@ export function CompareWorkspace() {
               Contract year
               <select
                 value={contractYear}
-                onChange={(event) => setContractYear(event.target.value as "2026" | "2027")}
+                onChange={(event) =>
+                  setContractYear(event.target.value as "2026" | "2027")
+                }
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               >
                 <option value="2026">2026</option>
@@ -751,30 +941,47 @@ export function CompareWorkspace() {
               Do you get help with your Medicare health or drug costs?
               <select
                 value={lisLevel}
-                onChange={(event) => setLisLevel(event.target.value as LisLevel)}
+                onChange={(event) =>
+                  setLisLevel(event.target.value as LisLevel)
+                }
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               >
                 <option value="LIS_MEDICAID">Medicaid</option>
                 <option value="LIS_SSI">Supplemental Security Income</option>
                 <option value="LIS_MSP">Medicare Savings Program</option>
                 <option value="LIS_SS">Extra Help (with drug costs)</option>
-                <option value="LIS_NONE">I don&apos;t get help from any of these programs</option>
+                <option value="LIS_NONE">
+                  I don&apos;t get help from any of these programs
+                </option>
               </select>
             </label>
             <label className="flex items-center gap-2 pb-2 text-sm">
-              <input type="checkbox" checked={showMppp} onChange={(event) => setShowMppp(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={showMppp}
+                onChange={(event) => setShowMppp(event.target.checked)}
+              />
               Show MPPP monthly smoothed payment
             </label>
           </div>
           {zipCode === "91361" ? (
-            <p className="mt-2 text-xs text-[var(--warn)]">This ZIP spans Ventura and Los Angeles. Pick the county before comparing.</p>
+            <p className="mt-2 text-xs text-[var(--warn)]">
+              This ZIP spans Ventura and Los Angeles. Pick the county before
+              comparing.
+            </p>
           ) : null}
           <div className="mt-4 border-t border-[var(--line)] pt-3">
             <p className="text-sm font-semibold">Pharmacies</p>
-            <p className="mt-1 text-xs text-stone-600">Up to five retail pharmacies, plus mail order. {retailCount} retail selected.</p>
+            <p className="mt-1 text-xs text-stone-600">
+              Up to five retail pharmacies, plus mail order. {retailCount}{" "}
+              retail selected.
+            </p>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
               {pharmacyChoices.map((pharmacy) => (
-                <label key={pharmacy.id} className="flex items-center gap-2 text-sm">
+                <label
+                  key={pharmacy.id}
+                  className="flex items-center gap-2 text-sm"
+                >
                   <input
                     type="checkbox"
                     checked={selectedPharmacyIds.includes(pharmacy.id)}
@@ -782,7 +989,11 @@ export function CompareWorkspace() {
                   />
                   <span className="font-medium">{pharmacy.name}</span>
                   {pharmacy.id.startsWith("custom-") ? (
-                    <button type="button" className="text-xs text-stone-600 underline" onClick={() => removeCustomPharmacy(pharmacy.id)}>
+                    <button
+                      type="button"
+                      className="text-xs text-stone-600 underline"
+                      onClick={() => removeCustomPharmacy(pharmacy.id)}
+                    >
                       Remove
                     </button>
                   ) : null}
@@ -791,7 +1002,9 @@ export function CompareWorkspace() {
               <div className="flex min-w-64 flex-1 gap-2">
                 <input
                   value={customPharmacyName}
-                  onChange={(event) => setCustomPharmacyName(event.target.value)}
+                  onChange={(event) =>
+                    setCustomPharmacyName(event.target.value)
+                  }
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -802,7 +1015,11 @@ export function CompareWorkspace() {
                   aria-label="Custom pharmacy name"
                   className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
                 />
-                <button type="button" onClick={addCustomPharmacy} className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium">
+                <button
+                  type="button"
+                  onClick={addCustomPharmacy}
+                  className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
+                >
                   Add pharmacy
                 </button>
               </div>
@@ -812,7 +1029,13 @@ export function CompareWorkspace() {
             <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <label className="block text-sm">
                 Plan type
-                <select value={planType} onChange={(event) => setPlanType(event.target.value as PlanCategory)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={planType}
+                  onChange={(event) =>
+                    setPlanType(event.target.value as PlanCategory)
+                  }
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="ALL">All plans</option>
                   <option value="MAPD">Medicare Advantage + drug</option>
                   <option value="PDP">Stand-alone Part D</option>
@@ -821,7 +1044,11 @@ export function CompareWorkspace() {
               </label>
               <label className="block text-sm">
                 Carrier
-                <select value={carrier} onChange={(event) => setCarrier(event.target.value)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={carrier}
+                  onChange={(event) => setCarrier(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="ALL">All carriers</option>
                   {carriers.map((name) => (
                     <option key={name}>{name}</option>
@@ -830,7 +1057,11 @@ export function CompareWorkspace() {
               </label>
               <label className="block text-sm">
                 Minimum stars
-                <select value={minStars} onChange={(event) => setMinStars(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={minStars}
+                  onChange={(event) => setMinStars(Number(event.target.value))}
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value={0}>Any</option>
                   <option value={3.5}>3.5</option>
                   <option value={4}>4.0</option>
@@ -839,26 +1070,52 @@ export function CompareWorkspace() {
               </label>
               <label className="block text-sm">
                 Max monthly premium
-                <input value={maxPremium} onChange={(event) => setMaxPremium(event.target.value)} inputMode="decimal" placeholder="Any" className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2" />
+                <input
+                  value={maxPremium}
+                  onChange={(event) => setMaxPremium(event.target.value)}
+                  inputMode="decimal"
+                  placeholder="Any"
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                />
               </label>
               <label className="block text-sm">
                 Deductible
-                <select value={deductible} onChange={(event) => setDeductible(event.target.value as DeductibleFilter)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={deductible}
+                  onChange={(event) =>
+                    setDeductible(event.target.value as DeductibleFilter)
+                  }
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="any">Any</option>
                   <option value="zero">$0 only</option>
                 </select>
               </label>
               <label className="block text-sm">
                 Network
-                <select value={network} onChange={(event) => setNetwork(event.target.value as NetworkFilter)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={network}
+                  onChange={(event) =>
+                    setNetwork(event.target.value as NetworkFilter)
+                  }
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="any">Any network status</option>
                   <option value="preferred">Preferred at one pharmacy</option>
-                  <option value="all-in-network">Every selected pharmacy in network</option>
+                  <option value="all-in-network">
+                    Every selected pharmacy in network
+                  </option>
                 </select>
               </label>
               <label className="block text-sm">
                 Preferred pharmacy
-                <select value={preferredPharmacyId} onChange={(event) => setPreferredPharmacyId(event.target.value)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={preferredPharmacyId}
+                  onChange={(event) =>
+                    setPreferredPharmacyId(event.target.value)
+                  }
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   {filterPharmacies.map((pharmacy) => (
                     <option key={pharmacy.id} value={pharmacy.id}>
                       {pharmacy.name}
@@ -868,7 +1125,13 @@ export function CompareWorkspace() {
               </label>
               <label className="block text-sm">
                 Sort and cost column
-                <select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={sortKey}
+                  onChange={(event) =>
+                    setSortKey(event.target.value as SortKey)
+                  }
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="total">Lowest total annual cost</option>
                   <option value="drug">Lowest drug cost only</option>
                   <option value="premium">Lowest monthly premium</option>
@@ -876,7 +1139,11 @@ export function CompareWorkspace() {
               </label>
               <label className="block text-sm">
                 Comparison pharmacy
-                <select value={comparePharmacyId} onChange={(event) => setComparePharmacyId(event.target.value)} className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2">
+                <select
+                  value={comparePharmacyId}
+                  onChange={(event) => setComparePharmacyId(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+                >
                   <option value="cheapest">Cheapest in-network</option>
                   {filterPharmacies.map((pharmacy) => (
                     <option key={pharmacy.id} value={pharmacy.id}>
@@ -886,7 +1153,11 @@ export function CompareWorkspace() {
                 </select>
               </label>
               <label className="flex items-center gap-2 pb-2 text-sm">
-                <input type="checkbox" checked={coveredOnly} onChange={(event) => setCoveredOnly(event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={coveredOnly}
+                  onChange={(event) => setCoveredOnly(event.target.checked)}
+                />
                 Hide plans missing a drug
               </label>
             </div>
@@ -912,16 +1183,22 @@ export function CompareWorkspace() {
                       event.target.value = "";
                     }}
                   />
-                  <span className="mt-2 block">{extracting ? "Reading the file…" : visionMessage}</span>
+                  <span className="mt-2 block">
+                    {extracting ? "Reading the file…" : visionMessage}
+                  </span>
                 </label>
                 <button
                   type="button"
                   className="text-sm font-medium text-[var(--accent)]"
-                  onClick={() => setMedications((current) => [...current, newDrug()])}
+                  onClick={() =>
+                    setMedications((current) => [...current, newDrug()])
+                  }
                 >
                   Add a drug
                 </button>
-                {error ? <p className="text-sm text-[var(--warn)]">{error}</p> : null}
+                {error ? (
+                  <p className="text-sm text-[var(--warn)]">{error}</p>
+                ) : null}
                 <button
                   type="submit"
                   disabled={loading}
@@ -935,350 +1212,401 @@ export function CompareWorkspace() {
         </div>
 
         <div className="grid items-start gap-6 lg:grid-cols-2">
-        <aside className="min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">Medications</h2>
-            {medications.length > 0 ? (
-              <button
-                type="button"
-                className="text-sm text-stone-600 underline"
-                onClick={() => {
-                  setMedications([]);
-                  setDrugNotes({});
-                  setFormOptions({});
-                  setError("");
-                }}
-              >
-                Remove all
-              </button>
-            ) : null}
-          </div>
-          {medications.length === 0 ? (
-            <p className="text-sm text-stone-600">Checked medications appear here.</p>
-          ) : (
-            <ol className="space-y-3">
+          <aside className="min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">Medications</h2>
+              {medications.length > 0 ? (
+                <button
+                  type="button"
+                  className="text-sm text-stone-600 underline"
+                  onClick={() => {
+                    setMedications([]);
+                    setDrugNotes({});
+                    setFormOptions({});
+                    setError("");
+                  }}
+                >
+                  Remove all
+                </button>
+              ) : null}
+            </div>
+            {medications.length === 0 ? (
+              <p className="text-sm text-stone-600">
+                Checked medications appear here.
+              </p>
+            ) : (
+              <ol className="space-y-3">
                 {medications.map((drug, index) => {
                   const note = drugNotes[drug.id];
                   const strengthChoices = note?.strengthChoices ?? [];
                   const confirmed = Boolean(drug.rxcui);
-                  const needsStrength = strengthChoices.length > 0 && !drug.strength.trim() && !confirmed;
+                  const needsStrength =
+                    strengthChoices.length > 0 &&
+                    !drug.strength.trim() &&
+                    !confirmed;
                   const daily = timesPerDay(drug);
                   const otherNames = (note?.spellingSuggestions ?? []).filter(
-                    (suggestion) => suggestion.drugName.toLowerCase() !== drug.name.toLowerCase(),
+                    (suggestion) =>
+                      suggestion.drugName.toLowerCase() !==
+                      drug.name.toLowerCase(),
                   );
                   return (
-                  <li key={drug.id} className="space-y-2 rounded-xl border border-[var(--line)] p-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-medium text-stone-500">Drug {index + 1}</p>
-                      <button type="button" className="text-xs text-stone-600 underline" onClick={() => removeDrug(drug.id)}>
-                        Remove
-                      </button>
-                    </div>
-                    {note && drug.name.trim() ? (
-                      <h3 className="text-sm font-semibold">{drug.name}</h3>
-                    ) : (
-                      <input
-                        aria-label={`Drug ${index + 1} name`}
-                        placeholder="Name, such as Eliquis"
-                        value={drug.name}
-                        onChange={(event) =>
-                          updateDrug(drug.id, {
-                            name: event.target.value,
-                            resolutionStatus: "UNRESOLVED",
-                            rxcui: undefined,
-                            resolvedName: undefined,
-                          })
-                        }
-                        onBlur={(event) => {
-                          const name = event.currentTarget.value.trim();
-                          if (name && drug.strength.trim()) void resolveDrug({ ...drug, name });
-                        }}
-                        className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-                      />
-                    )}
-                    {note?.wasSpellCorrected ? (
-                      <div className="space-y-1">
-                        <p className="text-xs text-stone-600">Changed from what was typed: {note.originalTypedName}</p>
-                        {otherNames.length > 0 ? (
+                    <li
+                      key={drug.id}
+                      className="space-y-2 rounded-xl border border-[var(--line)] p-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium text-stone-500">
+                          Drug {index + 1}
+                        </p>
+                        <button
+                          type="button"
+                          className="text-xs text-stone-600 underline"
+                          onClick={() => removeDrug(drug.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      {note && drug.name.trim() ? (
+                        <h3 className="text-sm font-semibold">{drug.name}</h3>
+                      ) : (
+                        <input
+                          aria-label={`Drug ${index + 1} name`}
+                          placeholder="Name, such as Eliquis"
+                          value={drug.name}
+                          onChange={(event) =>
+                            updateDrug(drug.id, {
+                              name: event.target.value,
+                              resolutionStatus: "UNRESOLVED",
+                              rxcui: undefined,
+                              resolvedName: undefined,
+                            })
+                          }
+                          onBlur={(event) => {
+                            const name = event.currentTarget.value.trim();
+                            if (name && drug.strength.trim())
+                              void resolveDrug({ ...drug, name });
+                          }}
+                          className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+                        />
+                      )}
+                      {note?.wasSpellCorrected ? (
+                        <div className="space-y-1">
+                          <p className="text-xs text-stone-600">
+                            Changed from what was typed:{" "}
+                            {note.originalTypedName}
+                          </p>
+                          {otherNames.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {otherNames.map((suggestion) => (
+                                <button
+                                  key={suggestion.drugName}
+                                  type="button"
+                                  onClick={() =>
+                                    chooseSpelling(drug, suggestion)
+                                  }
+                                  className="rounded-full border border-[var(--line)] px-2 py-1 text-xs"
+                                >
+                                  {suggestion.drugName}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {needsStrength ? (
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium text-amber-800">
+                            {note?.unlistedStrength
+                              ? `${note.unlistedStrength} is not a listed strength. Pick a strength`
+                              : "Pick a strength"}
+                          </p>
                           <div className="flex flex-wrap gap-1">
-                            {otherNames.map((suggestion) => (
+                            {strengthChoices.map((choice) => (
                               <button
-                                key={suggestion.drugName}
+                                key={choice}
                                 type="button"
-                                onClick={() => chooseSpelling(drug, suggestion)}
+                                onClick={() => pickStrength(drug, choice)}
                                 className="rounded-full border border-[var(--line)] px-2 py-1 text-xs"
                               >
-                                {suggestion.drugName}
+                                {choice}
                               </button>
                             ))}
                           </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {needsStrength ? (
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium text-amber-800">Pick a strength</p>
-                        <div className="flex flex-wrap gap-1">
-                          {strengthChoices.map((choice) => (
-                            <button
-                              key={choice}
-                              type="button"
-                              onClick={() => pickStrength(drug, choice)}
-                              className="rounded-full border border-[var(--line)] px-2 py-1 text-xs"
-                            >
-                              {choice}
-                            </button>
-                          ))}
                         </div>
-                      </div>
-                    ) : null}
-                    {confirmed ? (
-                      <p className="text-sm text-stone-700">
-                        {drug.strength} · {daily} {daily === 1 ? "time" : "times"} a day
-                      </p>
-                    ) : (
-                      <input
-                        aria-label={`Drug ${index + 1} strength`}
-                        placeholder="Strength, such as 20 mg or 10 mg / 20 mg"
-                        value={drug.strength}
-                        onChange={(event) =>
-                          updateDrug(drug.id, {
-                            strength: event.target.value,
-                            resolutionStatus: "UNRESOLVED",
-                            rxcui: undefined,
-                            resolvedName: undefined,
-                          })
-                        }
-                        onBlur={(event) => {
-                          const strength = event.currentTarget.value.trim();
-                          if (!drug.name.trim() || !strength) return;
-                          const next = { ...drug, strength, resolutionStatus: "UNRESOLVED" as const, rxcui: undefined, resolvedName: undefined };
-                          updateDrug(drug.id, next);
-                          void resolveDrug(next);
-                        }}
-                        className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-                      />
-                    )}
-                    <div className="flex flex-wrap gap-1">
-                      {[1, 2, 3].map((times) => (
-                        <button
-                          key={times}
-                          type="button"
-                          onClick={() => setTimesPerDay(drug, times)}
-                          className={`rounded-full border px-2 py-1 text-xs ${daily === times && drug.refillFrequencyMonths === "1" ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--line)]"}`}
-                        >
-                          {times} {times === 1 ? "time" : "times"} a day
-                        </button>
-                      ))}
-                    </div>
-                    {(formOptions[drug.id]?.length ?? 0) <= 1 && drug.resolutionStatus === "NOT_FOUND" ? (
-                      <select
-                        aria-label={`Drug ${index + 1} form`}
-                        value={drug.dosageForm}
-                        onChange={(event) => updateDrug(drug.id, { dosageForm: event.target.value as DosageForm })}
-                        className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-                      >
-                        {FORMS.map((form) => (
-                          <option key={form.value} value={form.value}>
-                            {form.label}
-                          </option>
+                      ) : null}
+                      {confirmed ? (
+                        <p className="text-sm text-stone-700">
+                          {drug.strength} · {quantityLabel(drug)}
+                        </p>
+                      ) : (
+                        <input
+                          aria-label={`Drug ${index + 1} strength`}
+                          placeholder="Strength, such as 20 mg or 10 mg / 20 mg"
+                          value={drug.strength}
+                          onChange={(event) =>
+                            updateDrug(drug.id, {
+                              strength: event.target.value,
+                              resolutionStatus: "UNRESOLVED",
+                              rxcui: undefined,
+                              resolvedName: undefined,
+                            })
+                          }
+                          onBlur={(event) => {
+                            const strength = event.currentTarget.value.trim();
+                            if (!drug.name.trim() || !strength) return;
+                            const next = {
+                              ...drug,
+                              strength,
+                              resolutionStatus: "UNRESOLVED" as const,
+                              rxcui: undefined,
+                              resolvedName: undefined,
+                            };
+                            updateDrug(drug.id, next);
+                            void resolveDrug(next);
+                          }}
+                          className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+                        />
+                      )}
+                      <div className="flex flex-wrap gap-1">
+                        {[1, 2, 3].map((times) => (
+                          <button
+                            key={times}
+                            type="button"
+                            onClick={() => setTimesPerDay(drug, times)}
+                            className={`rounded-full border px-2 py-1 text-xs ${daily === times && drug.refillFrequencyMonths === "1" ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--line)]"}`}
+                          >
+                            {times} {times === 1 ? "time" : "times"} a day
+                          </button>
                         ))}
-                      </select>
-                    ) : null}
-                    <FormResolution
-                      drug={drug}
-                      options={formOptions[drug.id] ?? []}
-                      onSelect={(variant) => selectVariant(drug, variant)}
-                      onCompareBoth={(checked) => {
-                        const forms = formOptions[drug.id] ?? [];
-                        const primary = forms.find((item) => item.rxcui === drug.rxcui) ?? forms[0];
-                        const alternate = forms.find((item) => item.dosageForm !== primary?.dosageForm);
-                        updateDrug(drug.id, {
-                          compareBothForms: checked,
-                          resolutionStatus: checked ? "AMBIGUOUS_FORM" : drug.rxcui ? "AUTO_LOCKED" : "AMBIGUOUS_FORM",
-                          rxcui: primary?.rxcui ?? drug.rxcui,
-                          resolvedName: primary?.fullName ?? drug.resolvedName,
-                          dosageForm: primary?.coarseForm ?? drug.dosageForm,
-                          dosageFormLabel: primary?.dosageForm ?? drug.dosageFormLabel,
-                          isBrand: primary?.isBrand ?? drug.isBrand,
-                          alternate: checked ? alternate : undefined,
-                        });
-                      }}
-                    />
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={drug.acceptGeneric}
-                        onChange={(event) => updateDrug(drug.id, { acceptGeneric: event.target.checked })}
+                      </div>
+                      {(formOptions[drug.id]?.length ?? 0) <= 1 &&
+                      drug.resolutionStatus === "NOT_FOUND" ? (
+                        <select
+                          aria-label={`Drug ${index + 1} form`}
+                          value={drug.dosageForm}
+                          onChange={(event) =>
+                            updateDrug(drug.id, {
+                              dosageForm: event.target.value as DosageForm,
+                            })
+                          }
+                          className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+                        >
+                          {FORMS.map((form) => (
+                            <option key={form.value} value={form.value}>
+                              {form.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      <FormResolution
+                        drug={drug}
+                        options={formOptions[drug.id] ?? []}
+                        onSelect={(variant) => selectVariant(drug, variant)}
+                        onCompareBoth={(checked) => {
+                          const forms = formOptions[drug.id] ?? [];
+                          const primary =
+                            forms.find((item) => item.rxcui === drug.rxcui) ??
+                            forms[0];
+                          const alternate = forms.find(
+                            (item) => item.dosageForm !== primary?.dosageForm,
+                          );
+                          updateDrug(drug.id, {
+                            compareBothForms: checked,
+                            resolutionStatus: checked
+                              ? "AMBIGUOUS_FORM"
+                              : drug.rxcui
+                                ? "AUTO_LOCKED"
+                                : "AMBIGUOUS_FORM",
+                            rxcui: primary?.rxcui ?? drug.rxcui,
+                            resolvedName:
+                              primary?.fullName ?? drug.resolvedName,
+                            dosageForm: primary?.coarseForm ?? drug.dosageForm,
+                            dosageFormLabel:
+                              primary?.dosageForm ?? drug.dosageFormLabel,
+                            isBrand: primary?.isBrand ?? drug.isBrand,
+                            alternate: checked ? alternate : undefined,
+                          });
+                        }}
                       />
-                      Accept a generic if one exists
-                    </label>
-                  </li>
+                      {drug.isBrand ? (
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={!drug.acceptGeneric}
+                            onChange={(event) =>
+                              updateDrug(drug.id, {
+                                acceptGeneric: !event.target.checked,
+                              })
+                            }
+                          />
+                          Brand only
+                        </label>
+                      ) : null}
+                    </li>
                   );
                 })}
               </ol>
-          )}
-        </aside>
-        <section className="min-w-0 space-y-4">
-          {plans.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-sm text-stone-600">
-              Run a comparison to see MAPD and PDP plans side by side. Pharmacy columns show preferred, standard, or
-              out-of-network status and the estimated annual drug cost.
-            </div>
-          ) : (
-            <>
-              <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
-                <div className="flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">
-                      {context?.countyName} County · {context?.zipCode}
-                    </h2>
-                    <p className="text-sm text-stone-600">
-                      {filtered.length} of {plans.length} sample plans. Highlighted cell is the lowest in-network drug cost
-                      in this filter.
+            )}
+          </aside>
+          <section className="min-w-0 space-y-4">
+            {plans.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-sm text-stone-600">
+                Run a comparison, then capture Medicare.gov proof for the
+                current medication list.
+              </div>
+            ) : (
+              <>
+                <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold">
+                        {context?.countyName} County · {context?.zipCode}
+                      </h2>
+                      <p className="text-sm text-stone-600">
+                        {filtered.length} of {plans.length} sample plans match
+                        these filters.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void captureProof()}
+                        disabled={proofLoading}
+                        className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
+                      >
+                        {proofLoading
+                          ? "Opening Medicare.gov…"
+                          : proof && !proof.error
+                            ? "View Medicare.gov proof"
+                            : "Capture Medicare.gov proof"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={exportCsv}
+                        className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
+                      >
+                        Export filtered CSV
+                      </button>
+                    </div>
+                  </div>
+                  <AuditBanner
+                    medications={quotedMeds}
+                    verified={
+                      filtered[0]
+                        ? drugsVerified(
+                            quotedMeds,
+                            comparisonQuote(filtered[0], comparePharmacyId),
+                          )
+                        : false
+                    }
+                  />
+                  {lisNote ? (
+                    <p className="mt-3 text-xs leading-5 text-stone-700">
+                      {lisNote.label}
                     </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => void captureProof()} disabled={proofLoading} className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium">
-                      {proofLoading ? "Opening Medicare.gov…" : "Capture Medicare.gov proof"}
+                  ) : null}
+                  {showMppp ? (
+                    <p className="mt-2 text-xs leading-5 text-stone-700">
+                      The monthly figure is an even split of this sample&apos;s
+                      annual drug cost. It is a planning estimate of the
+                      Medicare Prescription Payment Plan, not the CMS invoice.
+                      The January-style amount is the first fill before
+                      smoothing.
+                    </p>
+                  ) : null}
+                  {splitTip ? (
+                    <p className="mt-3 rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm">
+                      {splitTip}
+                    </p>
+                  ) : null}
+                  {formTips.map((tip) => (
+                    <p
+                      key={tip}
+                      className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950"
+                    >
+                      {tip}
+                    </p>
+                  ))}
+                  {proof?.error ? (
+                    <p className="mt-3 text-sm text-[var(--warn)]">
+                      {proof.error}
+                    </p>
+                  ) : null}
+                  {proof && proof.images.length > 0 ? (
+                    <button
+                      type="button"
+                      className="mr-4 mt-2 inline-block text-sm text-[var(--accent)] underline"
+                      onClick={() => setOpenProofKey(proofKey)}
+                    >
+                      View screenshots
                     </button>
-                    <button type="button" onClick={exportCsv} className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium">
-                      Export filtered CSV
-                    </button>
-                  </div>
+                  ) : null}
+                  {proof?.url ? (
+                    <a
+                      className="mt-2 inline-block text-sm text-[var(--accent)] underline"
+                      href={proof.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open this Medicare.gov page
+                    </a>
+                  ) : null}
+                  {proof?.pdf && proof.id ? (
+                    <a
+                      className="ml-4 mt-2 inline-block text-sm text-[var(--accent)] underline"
+                      href={`/api/medicare/proof/${proof.id}/page.pdf`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Download PDF
+                    </a>
+                  ) : null}
                 </div>
-                <AuditBanner medications={quotedMeds} verified={filtered[0] ? drugsVerified(quotedMeds, comparisonQuote(filtered[0], comparePharmacyId)) : false} />
-                {lisNote ? <p className="mt-3 text-xs leading-5 text-stone-700">{lisNote.label}</p> : null}
-                {showMppp ? (
-                  <p className="mt-2 text-xs leading-5 text-stone-700">
-                    The monthly figure is an even split of this sample&apos;s annual drug cost. It is a planning estimate of the
-                    Medicare Prescription Payment Plan, not the CMS invoice. The January-style amount is the first fill before smoothing.
-                  </p>
-                ) : null}
-                {splitTip ? <p className="mt-3 rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm">{splitTip}</p> : null}
-                {formTips.map((tip) => (
-                  <p key={tip} className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                    {tip}
-                  </p>
-                ))}
-                {proofError ? <p className="mt-3 text-sm text-[var(--warn)]">{proofError}</p> : null}
-                {proofUrl ? (
-                  <a className="mt-2 inline-block text-sm text-[var(--accent)] underline" href={proofUrl} target="_blank" rel="noreferrer">
-                    Open this Medicare.gov page
-                  </a>
-                ) : null}
-                {proofPdf && proofId ? (
-                  <a className="ml-4 mt-2 inline-block text-sm text-[var(--accent)] underline" href={`/api/medicare/proof/${proofId}/page.pdf`} target="_blank" rel="noreferrer">
-                    Download PDF
-                  </a>
-                ) : null}
-              </div>
 
-              <div className="overflow-x-auto rounded-2xl border border-[var(--line)] bg-[var(--card)]">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-stone-100 text-xs uppercase tracking-wide text-stone-600">
-                    <tr>
-                      <th className="px-3 py-3">Plan</th>
-                      <th className="px-3 py-3">Premium</th>
-                      <th className="px-3 py-3">Total</th>
-                      {plans[0]?.pharmacyQuotes.map((quote) => (
-                        <th key={quote.pharmacyId} className="px-3 py-3">
-                          {quote.pharmacyName}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((plan) => {
-                      const key = `${plan.contractId}-${plan.planId}`;
-                      const headline = comparisonQuote(plan, comparePharmacyId);
-                      const open = openPlan === key;
-                      return (
-                        <Fragment key={key}>
-                          <tr className="border-t border-[var(--line)] align-top">
-                            <td className="px-3 py-3">
-                              <button type="button" className="text-left" onClick={() => setOpenPlan(open ? null : key)}>
-                                <span className="font-medium">{plan.planName}</span>
-                                <span className="mt-1 block text-xs text-stone-500">
-                                  {plan.carrierName} · {plan.planType} · {plan.starRating} stars · deductible {money(plan.annualDrugDeductible)}
-                                </span>
-                                <span className="mt-1 block text-xs text-[var(--accent)]">{open ? "Hide drugs" : "Show drugs"}</span>
-                              </button>
-                            </td>
-                            <td className="px-3 py-3">{money(plan.monthlyPremium)}</td>
-                            <td className="px-3 py-3">
-                              <span className="font-semibold">{money(headline.totalAnnualCost)}</span>
-                              <span className="mt-1 block text-xs text-stone-500">at {headline.pharmacyName}</span>
-                              {showMppp ? (
-                                <span className="mt-1 block text-xs text-stone-600">
-                                  January-style {money(headline.januaryDrugCost)} · about {money(headline.mpppMonthlyEstimate)}/month smoothed
-                                </span>
-                              ) : null}
-                              {plan.premiumNote ? <span className="mt-1 block text-xs text-stone-500">{plan.premiumNote}</span> : null}
-                              <button type="button" className="mt-2 text-xs font-medium text-[var(--accent)] underline" onClick={() => void captureProof(plan)}>
-                                View Medicare.gov proof
-                              </button>
-                            </td>
-                            {plan.pharmacyQuotes.map((quote) => {
-                              const marked = cheapest?.planId === key && cheapest.pharmacyId === quote.pharmacyId;
-                              return (
-                                <td key={quote.pharmacyId} className={`px-3 py-3 ${marked ? "bg-[var(--accent-soft)]" : ""}`}>
-                                  <span className="block text-xs font-medium">{networkLabel(quote.networkStatus)}</span>
-                                  <span className="font-medium">{money(quote.annualDrugCostOop)}</span>
-                                  {quote.hitsCatastrophicCap ? (
-                                    <span className="mt-1 block text-xs text-stone-500">Hits the annual cap</span>
-                                  ) : null}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                          {open ? (
-                            <tr className="border-t border-[var(--line)] bg-stone-50">
-                              <td colSpan={3 + plan.pharmacyQuotes.length} className="px-3 py-3">
-                                <DrugDetail
-                                  quote={headline}
-                                  alternatives={alternatives}
-                                  onAlternatives={(drug) => void loadAlternatives(drug)}
-                                  onPrice={(name) => priceAlternative(name)}
-                                />
-                              </td>
-                            </tr>
-                          ) : null}
-                        </Fragment>
-                      );
-                    })}
-                    {filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="px-3 py-6 text-stone-600">
-                          No plans match these filters.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </section>
+              </>
+            )}
+          </section>
         </div>
       </form>
-      {proofImage ? (
-        <div className="fixed inset-0 z-20 flex items-center justify-center bg-stone-900/50 p-4" role="dialog" aria-label="Medicare.gov proof">
+      {openProof ? (
+        <div
+          className="fixed inset-0 z-20 flex items-center justify-center bg-stone-900/50 p-4"
+          role="dialog"
+          aria-label="Medicare.gov proof"
+        >
           <div className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl bg-white p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Medicare.gov proof</h2>
-              <button type="button" className="text-sm underline" onClick={() => setProofImage(null)}>
+              <button
+                type="button"
+                className="text-sm underline"
+                onClick={() => setOpenProofKey(null)}
+              >
                 Close
               </button>
             </div>
-            <p className="mb-3 text-xs text-stone-600">These images are the public pages the browser reached. They are not a beneficiary quote.</p>
-            {proofError ? <p className="mb-3 text-sm text-[var(--warn)]">{proofError}</p> : null}
+            <p className="mb-3 text-xs text-stone-600">
+              These images are the public pages the browser reached. They are
+              not a beneficiary quote.
+            </p>
+            {openProof.error ? (
+              <p className="mb-3 text-sm text-[var(--warn)]">
+                {openProof.error}
+              </p>
+            ) : null}
             <div className="space-y-4">
-              {proofImages.map((image) => (
+              {openProof.images.map((image) => (
                 <figure key={image.src}>
-                  <figcaption className="mb-2 text-sm font-medium">{image.label}</figcaption>
+                  <figcaption className="mb-2 text-sm font-medium">
+                    {image.label}
+                  </figcaption>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={image.src} alt={image.label} className="w-full rounded-lg border border-[var(--line)]" />
+                  <img
+                    src={image.src}
+                    alt={image.label}
+                    className="w-full rounded-lg border border-[var(--line)]"
+                  />
                 </figure>
               ))}
             </div>
@@ -1301,7 +1629,11 @@ function FormResolution({
   onCompareBoth: (checked: boolean) => void;
 }) {
   if (drug.resolutionStatus === "NOT_FOUND") {
-    return <p className="text-xs text-[var(--warn)]">This name and strength were not found. Pick the form before comparing.</p>;
+    return (
+      <p className="text-xs text-[var(--warn)]">
+        This name and strength were not found. Pick the form before comparing.
+      </p>
+    );
   }
   if (options.length < 2) {
     if (!drug.rxcui) return null;
@@ -1313,7 +1645,11 @@ function FormResolution({
   }
   return (
     <div className="space-y-2">
-      {drug.rxcui ? <p className="text-xs text-emerald-800">Form confirmed.</p> : <p className="text-xs font-medium text-amber-800">Pick a form</p>}
+      {drug.rxcui ? (
+        <p className="text-xs text-emerald-800">Form confirmed.</p>
+      ) : (
+        <p className="text-xs font-medium text-amber-800">Pick a form</p>
+      )}
       <div className="flex flex-wrap gap-1">
         {options.map((variant) => (
           <button
@@ -1327,104 +1663,54 @@ function FormResolution({
         ))}
       </div>
       <label className="flex items-center gap-2 text-xs">
-        <input type="checkbox" checked={Boolean(drug.compareBothForms)} onChange={(event) => onCompareBoth(event.target.checked)} />
+        <input
+          type="checkbox"
+          checked={Boolean(drug.compareBothForms)}
+          onChange={(event) => onCompareBoth(event.target.checked)}
+        />
         Test both forms
       </label>
     </div>
   );
 }
 
-function AuditBanner({ medications, verified }: { medications: DrugInput[]; verified: boolean }) {
+function AuditBanner({
+  medications,
+  verified,
+}: {
+  medications: DrugInput[];
+  verified: boolean;
+}) {
   if (medications.length === 0) return null;
   return (
     <div className="mt-4 rounded-xl border border-[var(--line)] p-3">
-      <p className={`text-xs font-semibold ${verified ? "text-emerald-800" : "text-amber-800"}`}>
+      <p
+        className={`text-xs font-semibold ${verified ? "text-emerald-800" : "text-amber-800"}`}
+      >
         {verified ? "Verified match" : "Dosage review needed"}
       </p>
       <ul className="mt-2 space-y-1 text-xs text-stone-700">
         {medications.map((drug) => (
           <li key={drug.id}>
-            Typed {drug.name} {drug.strength} {drug.dosageFormLabel || drug.dosageForm}
-            {drug.resolvedName ? ` · Resolved as ${drug.resolvedName}` : " · not resolved to an RxCUI"}
+            Typed {drug.name} {drug.strength}{" "}
+            {drug.dosageFormLabel || drug.dosageForm}
+            {drug.resolvedName
+              ? ` · Resolved as ${drug.resolvedName}`
+              : " · not resolved to an RxCUI"}
             {drug.rxcui ? ` · RxCUI ${drug.rxcui}` : ""}
-            {drug.isBrand ? " · brand only" : drug.resolutionStatus === "AUTO_LOCKED" ? " · generic" : ""}
-            {drug.compareBothForms && drug.alternate ? ` · also quoting ${drug.alternate.fullName}` : ""}
+            {drug.isBrand
+              ? drug.acceptGeneric
+                ? " · generic allowed"
+                : " · brand only"
+              : drug.resolutionStatus === "AUTO_LOCKED"
+                ? " · generic"
+                : ""}
+            {drug.compareBothForms && drug.alternate
+              ? ` · also quoting ${drug.alternate.fullName}`
+              : ""}
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function DrugDetail({
-  quote,
-  alternatives,
-  onAlternatives,
-  onPrice,
-}: {
-  quote: PharmacyPlanQuote;
-  alternatives: Record<string, { name: string; rxcui: string; className: string }[]>;
-  onAlternatives: (drug: DrugPlanBreakdown) => void;
-  onPrice: (name: string) => void;
-}) {
-  return (
-    <div>
-      <p className="mb-2 text-xs font-medium text-stone-500">Drug detail at {quote.pharmacyName}</p>
-      <div className="grid gap-2 md:grid-cols-2">
-        {quote.drugBreakdowns.map((drug) => {
-          const culprit = isCostCulprit(drug.annualOutOfPocketForDrug, quote.annualDrugCostOop, drug.coveredOnFormulary);
-          const options = drug.rxcui ? alternatives[drug.rxcui] : undefined;
-          return (
-          <article key={drug.drugId} className={`rounded-xl border bg-white p-3 ${culprit ? "border-red-400" : "border-[var(--line)]"}`}>
-            <h3 className="font-medium">{drug.drugName}</h3>
-            {culprit ? (
-              <p className="mt-1 text-xs font-medium text-red-700">
-                {drug.coveredOnFormulary ? "This drug is more than half of the annual drug cost." : "Not covered on this formulary."}
-              </p>
-            ) : null}
-            <p className="mt-1 text-xs text-stone-600">
-              {drug.coveredOnFormulary ? `Tier ${drug.tier}` : "Not covered on this formulary"}
-              {drug.usedGeneric ? " · priced as generic" : ""}
-            </p>
-            <dl className="mt-2 grid grid-cols-2 gap-1 text-xs">
-              <div>Monthly negotiated</div>
-              <div>{money(drug.negotiatedRetailMonthlyCost)}</div>
-              <div>Est. monthly share</div>
-              <div>{money(drug.initialCoverageMonthlyCopay)}</div>
-              <div>Annual for this drug</div>
-              <div>{money(drug.annualOutOfPocketForDrug)}</div>
-            </dl>
-            <p className="mt-2 text-xs text-stone-600">
-              {[
-                drug.priorAuth ? "Prior authorization" : null,
-                drug.stepTherapy ? "Step therapy" : null,
-                drug.quantityLimit ? `Quantity limit ${drug.quantityLimit}` : null,
-                drug.deductibleApplies ? "Deductible applies" : "Deductible does not apply",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-            {drug.rxcui ? (
-              <button type="button" className="mt-2 text-xs text-[var(--accent)] underline" onClick={() => onAlternatives(drug)}>
-                Show same-class alternatives
-              </button>
-            ) : null}
-            {options && options.length > 0 ? (
-              <ul className="mt-2 space-y-1 text-xs">
-                {options.map((item) => (
-                  <li key={item.rxcui}>
-                    {item.name} · {item.className}{" "}
-                    <button type="button" className="text-[var(--accent)] underline" onClick={() => onPrice(item.name)}>
-                      Price this alternative
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </article>
-          );
-        })}
-      </div>
     </div>
   );
 }

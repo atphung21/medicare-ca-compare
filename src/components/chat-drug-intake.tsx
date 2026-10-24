@@ -1,8 +1,18 @@
 "use client";
 
-import { coarseDosageForm, type DrugInput, type ResolvedVariant } from "@/schemas/medicare";
+import { sameStrength } from "@/lib/strength";
+import {
+  coarseDosageForm,
+  type DrugInput,
+  type ResolvedVariant,
+} from "@/schemas/medicare";
+import type {
+  MedicationDraft,
+  SpellingSuggestion,
+  StagingOption,
+  StagingVariant,
+} from "@/services/med-list-parser";
 import { useState } from "react";
-import type { MedicationDraft, SpellingSuggestion, StagingOption, StagingVariant } from "@/services/med-list-parser";
 
 const SAMPLE = `medications:
 metformin 1000 2/ day
@@ -22,6 +32,7 @@ export type DrugReviewNote = {
   confidenceScore: number;
   spellingSuggestions: SpellingSuggestion[];
   strengthChoices: string[];
+  unlistedStrength?: string;
 };
 
 export type CheckedMedication = {
@@ -30,7 +41,11 @@ export type CheckedMedication = {
   forms: ResolvedVariant[];
 };
 
-export function ChatDrugIntake({ onChecked }: { onChecked: (items: CheckedMedication[]) => void }) {
+export function ChatDrugIntake({
+  onChecked,
+}: {
+  onChecked: (items: CheckedMedication[]) => void;
+}) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -44,7 +59,11 @@ export function ChatDrugIntake({ onChecked }: { onChecked: (items: CheckedMedica
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      const data = (await response.json()) as { ok: boolean; drafts?: MedicationDraft[]; error?: string };
+      const data = (await response.json()) as {
+        ok: boolean;
+        drafts?: MedicationDraft[];
+        error?: string;
+      };
       if (!response.ok || !data.ok || !data.drafts) {
         setMessage(data.error || "That note could not be checked.");
         return;
@@ -62,10 +81,18 @@ export function ChatDrugIntake({ onChecked }: { onChecked: (items: CheckedMedica
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium">Paste a medication list</p>
         <div className="flex gap-3">
-          <button type="button" className="text-xs text-[var(--accent)] underline" onClick={() => setText(SAMPLE)}>
+          <button
+            type="button"
+            className="text-xs text-[var(--accent)] underline"
+            onClick={() => setText(SAMPLE)}
+          >
             Use sample list
           </button>
-          <button type="button" className="text-xs text-[var(--accent)] underline" onClick={() => setText(MISSPELLED_SAMPLE)}>
+          <button
+            type="button"
+            className="text-xs text-[var(--accent)] underline"
+            onClick={() => setText(MISSPELLED_SAMPLE)}
+          >
             Test misspelled sample
           </button>
         </div>
@@ -74,7 +101,7 @@ export function ChatDrugIntake({ onChecked }: { onChecked: (items: CheckedMedica
         value={text}
         onChange={(event) => setText(event.target.value)}
         rows={5}
-        placeholder="One medication per line, with strength and how often it is taken"
+        placeholder="Type or paste medications in any format, such as: lisinoprill 10 once a day, metformin ER 500 2 tabs bid, Eliquis"
         className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
       />
       <button
@@ -93,14 +120,35 @@ export function ChatDrugIntake({ onChecked }: { onChecked: (items: CheckedMedica
 function cardsFromDraft(draft: MedicationDraft): CheckedMedication[] {
   const selectedStrengths = draft.strengths.filter((option) => option.selected);
   if (selectedStrengths.length === 0) {
-    return [cardFor(draft, "", [], draft.strengths.map((option) => option.label), "UNRESOLVED")];
+    const chosenForms = new Set(
+      draft.forms.filter((option) => option.selected).map((option) => option.label),
+    );
+    const fitting = draft.strengths.filter((option) =>
+      option.variants.some((variant) => chosenForms.has(variant.dosageForm)),
+    );
+    return [
+      cardFor(
+        draft,
+        "",
+        [],
+        (fitting.length > 0 ? fitting : draft.strengths).map((option) => option.label),
+        "UNRESOLVED",
+      ),
+    ];
   }
   const selectedForms = draft.forms.filter((option) => option.selected);
-  const formPool = draft.status === "MULTIPLE_FORMS" ? draft.forms : selectedForms.length > 0 ? selectedForms : draft.forms.slice(0, 1);
+  const formPool =
+    draft.status === "MULTIPLE_FORMS"
+      ? draft.forms
+      : selectedForms.length > 0
+        ? selectedForms
+        : draft.forms.slice(0, 1);
   return selectedStrengths.map((strength) => {
     const variants = uniqueVariants(strength, formPool);
-    if (variants.length > 1) return cardFor(draft, strength.label, variants, [], "AMBIGUOUS_FORM");
-    if (variants.length === 1) return cardFor(draft, strength.label, variants, [], "AUTO_LOCKED");
+    if (variants.length > 1)
+      return cardFor(draft, strength.label, variants, [], "AMBIGUOUS_FORM");
+    if (variants.length === 1)
+      return cardFor(draft, strength.label, variants, [], "AUTO_LOCKED");
     return cardFor(draft, strength.label, [], [], "UNRESOLVED", formPool[0]);
   });
 }
@@ -114,17 +162,22 @@ function cardFor(
   fallbackForm?: StagingOption,
 ): CheckedMedication {
   const locked = status === "AUTO_LOCKED" ? variants[0] : undefined;
-  const hinted = fallbackForm ?? draft.forms.find((option) => option.selected) ?? draft.forms[0];
+  const hinted =
+    fallbackForm ??
+    draft.forms.find((option) => option.selected) ??
+    draft.forms[0];
   return {
     drug: {
       id: crypto.randomUUID(),
       name: draft.drugName,
       strength,
-      dosageForm: locked?.coarseForm ?? (hinted ? coarseDosageForm(hinted.label) : "TABLET"),
+      dosageForm:
+        locked?.coarseForm ??
+        (hinted ? coarseDosageForm(hinted.label) : "TABLET"),
       dosageFormLabel: locked?.dosageForm ?? hinted?.label,
       quantityPerFill: draft.monthlyQuantity,
       refillFrequencyMonths: "1",
-      acceptGeneric: locked ? !locked.isBrand : true,
+      acceptGeneric: true,
       rxcui: locked?.rxcui,
       resolvedName: locked?.fullName,
       isBrand: locked?.isBrand,
@@ -137,17 +190,26 @@ function cardFor(
       confidenceScore: draft.confidenceScore,
       spellingSuggestions: draft.spellingSuggestions,
       strengthChoices,
+      unlistedStrength:
+        strengthChoices.length > 0 ? (draft.typedStrength ?? undefined) : undefined,
     },
     forms: variants,
   };
 }
 
-function uniqueVariants(strength: StagingOption, forms: StagingOption[]): ResolvedVariant[] {
+function uniqueVariants(
+  strength: StagingOption,
+  forms: StagingOption[],
+): ResolvedVariant[] {
   const seen = new Set<string>();
   const variants: ResolvedVariant[] = [];
   for (const form of forms) {
     const match = matchingVariant(strength, form);
-    const pool = match ? [match] : form.variants.filter((variant) => sameText(variant.strength, strength.label));
+    const pool = match
+      ? [match]
+      : form.variants.filter((variant) =>
+          sameText(variant.strength, strength.label),
+        );
     for (const variant of pool) {
       if (seen.has(variant.rxcui)) continue;
       seen.add(variant.rxcui);
@@ -157,7 +219,10 @@ function uniqueVariants(strength: StagingOption, forms: StagingOption[]): Resolv
   return variants;
 }
 
-function matchingVariant(strength: StagingOption, form: StagingOption): StagingVariant | undefined {
+function matchingVariant(
+  strength: StagingOption,
+  form: StagingOption,
+): StagingVariant | undefined {
   return (
     strength.variants.find((variant) => variant.dosageForm === form.label) ??
     form.variants.find((variant) => sameText(variant.strength, strength.label))
@@ -165,5 +230,9 @@ function matchingVariant(strength: StagingOption, form: StagingOption): StagingV
 }
 
 function sameText(left: string, right: string) {
-  return left.toLowerCase().replace(/\s+/g, "") === right.toLowerCase().replace(/\s+/g, "");
+  return (
+    sameStrength(left, right) ||
+    left.toLowerCase().replace(/\s+/g, "") ===
+      right.toLowerCase().replace(/\s+/g, "")
+  );
 }

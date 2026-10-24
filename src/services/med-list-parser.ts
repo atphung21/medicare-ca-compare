@@ -1,5 +1,8 @@
+import { geminiGenerateUrl } from "@/lib/gemini";
+import { hasStrengthUnit, matchStrengthLabel, strengthKey } from "@/lib/strength";
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
-import { catalogDrug, correctDrugToken, splitMedicationSpecs, type SpellingSuggestion } from "@/services/drug-spellcheck";
+import { catalogDrug, correctDrugToken, similarity, type SpellingSuggestion } from "@/services/drug-spellcheck";
+import { normalizeMedicationLine, type FormHints, type NormalizedMedication } from "@/services/med-line-normalizer";
 import { listRxNormVariants } from "@/services/rxnorm-resolver";
 
 export type DraftStatus = "READY" | "MISSING_STRENGTH" | "MULTIPLE_FORMS";
@@ -28,6 +31,7 @@ export interface MedicationDraft {
   wasSpellCorrected: boolean;
   confidenceScore: number;
   spellingSuggestions: SpellingSuggestion[];
+  typedStrength: string | null;
   dailyFrequency: number;
   monthlyQuantity: number;
   status: DraftStatus;
@@ -36,6 +40,15 @@ export interface MedicationDraft {
 }
 
 export type { SpellingSuggestion };
+
+interface NameResolution {
+  key: string;
+  typed: string;
+  variants: StagingVariant[];
+  corrected: boolean;
+  confidence: number;
+  suggestions: SpellingSuggestion[];
+}
 
 const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; forms: { label: string; extended: boolean }[] }> = {
   metformin: {
@@ -66,19 +79,17 @@ const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; form
   },
 };
 
+const HEADER = /^(?:current\s+)?(?:medications?|meds|med list|rx|drug list|prescriptions?)\s*:?\s*/i;
+
 export async function parseMedicationList(text: string): Promise<MedicationDraft[]> {
   const lines = await medicationLines(text);
-  const specs = lines.flatMap((line) => splitMedicationSpecs(line));
-  const drafts: MedicationDraft[] = [];
-  for (const [index, spec] of specs.entries()) {
-    drafts.push(await parseLine(spec.text, index, spec.rawLine));
-  }
-  return drafts;
+  const perLine = await mapLimit(lines, 4, draftsForLine);
+  return perLine.flat().map((draft, index) => ({ ...draft, id: `draft-${index}-${draft.id}` }));
 }
 
 async function medicationLines(text: string) {
   const split = splitLines(text);
-  if (split.length > 1 || !process.env.GEMINI_API_KEY) return split;
+  if (split.length > 1 || text.trim().length < 80 || !process.env.GEMINI_API_KEY) return split;
   const fromGemini = await splitParagraphWithGemini(text);
   return fromGemini.length > 0 ? fromGemini : split;
 }
@@ -86,132 +97,186 @@ async function medicationLines(text: string) {
 function splitLines(text: string) {
   return text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*•\d.)\s]+/, "").trim())
-    .filter((line) => line.length > 1 && !/^(medications?|meds|rx|drug list)\s*:?\s*$/i.test(line));
+    .map((line) =>
+      line
+        .replace(/^\s*(?:[-*•]+|\d+[.)])\s*/, "")
+        .replace(HEADER, "")
+        .trim(),
+    )
+    .filter((line) => line.length > 1)
+    .flatMap(splitSegments);
+}
+
+/** Splits "metformin 500, lisinopril 10" but keeps "metformin 500, take 2 tabs" together. */
+function splitSegments(line: string) {
+  const segments: string[] = [];
+  for (const part of line.split(/;|,(?!\d{3}\b)/)) {
+    const piece = part.trim();
+    if (!piece) continue;
+    if (segments.length > 0 && normalizeMedicationLine(piece).tokens.length === 0) {
+      segments[segments.length - 1] += `, ${piece}`;
+    } else {
+      segments.push(piece);
+    }
+  }
+  return segments;
 }
 
 async function splitParagraphWithGemini(text: string) {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `Split this medication note into one drug per line. Keep the strength and frequency words that are already written. Do not invent a strength or a drug. Return JSON {"lines":["..."]}.\n\n${text}`,
-                },
-              ],
-            },
-          ],
-          generationConfig: { temperature: 0, responseMimeType: "application/json" },
-        }),
-      },
-    );
-    if (!response.ok) return [];
-    const body = await response.json();
-    const raw = body?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-    const parsed = JSON.parse(raw) as { lines?: string[] };
-    return (parsed.lines ?? []).map((line) => line.trim()).filter((line) => line.length > 1);
-  } catch {
-    return [];
-  }
+  const parsed = await askGemini<{ lines?: string[] }>(
+    `Split this medication note into one drug per line. Keep the strength and frequency words that are already written. Do not invent a strength or a drug. Return JSON {"lines":["..."]}.\n\n${text}`,
+  );
+  return (parsed?.lines ?? []).map((line) => line.trim()).filter((line) => line.length > 1);
 }
 
-async function parseLine(line: string, index: number, rawLine = line): Promise<MedicationDraft> {
-  let working = line.toLowerCase();
-  let dailyFrequency = 1;
-  const slashFrequency = working.match(/(\d+)\s*(?:\/|per|x)\s*(?:day|d|daily)\b/i);
-  if (slashFrequency) {
-    dailyFrequency = Number(slashFrequency[1]) || 1;
-    working = working.replace(slashFrequency[0], " ");
-  } else if (/\b(twice\s+daily|twice\s+a\s+day|bid|2x)\b/i.test(working)) {
-    dailyFrequency = 2;
-    working = working.replace(/\b(twice\s+daily|twice\s+a\s+day|bid|2x)\b/gi, " ");
-  } else if (/\b(three\s+times(?:\s+daily)?|tid|3x)\b/i.test(working)) {
-    dailyFrequency = 3;
-    working = working.replace(/\b(three\s+times(?:\s+daily)?|tid|3x)\b/gi, " ");
-  } else if (/\b(once\s+daily|daily|qd|1x)\b/i.test(working)) {
-    dailyFrequency = 1;
-    working = working.replace(/\b(once\s+daily|daily|qd|1x)\b/gi, " ");
-  }
+async function draftsForLine(line: string): Promise<MedicationDraft[]> {
+  const norm = normalizeMedicationLine(line);
+  if (norm.tokens.length === 0) return [];
 
-  let extractedStrength: string | null = null;
-  const combo = working.match(/(\d+(?:\.\d+)?)\s*(mg|mcg|ml|g)?\s*[-/]\s*(\d+(?:\.\d+)?)\s*(mg|mcg|ml|g)?/i);
-  if (combo) {
-    const unit = (combo[4] || combo[2] || "mg").toLowerCase();
-    extractedStrength = `${combo[1]} ${unit} / ${combo[3]} ${unit}`;
-    working = working.replace(combo[0], " ");
-  } else {
-    const single = working.match(/\b(\d+(?:\.\d+)?)\s*(mg|mcg|ml|g|units)?\b/i);
-    if (single) {
-      extractedStrength = `${single[1]} ${(single[2] || "mg").toLowerCase()}`;
-      working = working.replace(single[0], " ");
+  const whole = await resolveName(norm.name, norm.typedName);
+  if (whole) return [buildDraft(norm, whole)];
+
+  if (norm.tokens.length > 1) {
+    const found = await separateDrugs(norm.tokens);
+    if (found.length === 1) return [buildDraft(norm, found[0])];
+    if (found.length > 1) {
+      const byIndex = norm.strengths.length === found.length;
+      return found.map((resolution, index) =>
+        buildDraft({ ...norm, strengths: byIndex ? [norm.strengths[index]] : [] }, resolution),
+      );
     }
   }
 
-  const explicitExtended = /\b(er|xr|sr|xl|extended)\b/i.test(working);
-  const explicitCapsule = /\b(cap|caps|capsule|capsules)\b/i.test(working);
-  const explicitTablet = /\b(tab|tabs|tablet|tablets)\b/i.test(working);
-  const drugKey = working
-    .replace(/\b(er|xr|sr|xl|extended|tab|tabs|tablet|tablets|cap|caps|capsule|capsules|oral)\b/gi, " ")
-    .replace(/[^a-z\s/]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const spelling = await correctDrugToken(drugKey);
-  const lookupKey = spelling.lookupKey || drugKey;
-  const live = lookupKey.length >= 3 ? await listRxNormVariants(lookupKey) : [];
-  const fromRxNorm = live.length > 0;
-  const variants = fromRxNorm ? live.map(toStagingVariant) : fallbackVariants(lookupKey);
-  const drugName = spelling.wasSpellCorrected || catalogDrug(lookupKey) ? spelling.displayName : fromRxNorm ? displayDrugName(lookupKey) : fallbackName(lookupKey);
-
-  const strengthGroups = groupBy(variants, (variant) => displayStrength(variant.strength));
-  if (extractedStrength && !strengthGroups.some((group) => sameStrength(group.label, extractedStrength))) {
-    strengthGroups.unshift({ label: displayStrength(extractedStrength), variants: [] });
+  const guesses = await guessDrugNamesWithGemini(norm.rawLine);
+  const guessed: NameResolution[] = [];
+  for (const guess of guesses.slice(0, norm.tokens.length)) {
+    const resolution = await resolveName(normalizeMedicationLine(guess).name, norm.typedName);
+    if (resolution) guessed.push({ ...resolution, corrected: true, confidence: Math.min(resolution.confidence, 80) });
   }
+  if (guessed.length === 1) return [buildDraft(norm, guessed[0])];
+  if (guessed.length > 1) {
+    const byIndex = norm.strengths.length === guessed.length;
+    return guessed.map((resolution, index) =>
+      buildDraft({ ...norm, strengths: byIndex ? [norm.strengths[index]] : [] }, resolution),
+    );
+  }
+
+  return [
+    buildDraft(norm, {
+      key: norm.name,
+      typed: norm.typedName,
+      variants: [],
+      corrected: false,
+      confidence: 0,
+      suggestions: [],
+    }),
+  ];
+}
+
+async function separateDrugs(tokens: string[]) {
+  const candidates = [...new Set(tokens.filter((token) => token.length >= 4))].slice(0, 5);
+  const resolved = await Promise.all(candidates.map((token) => resolveName(token, token)));
+  const seen = new Set<string>();
+  return resolved.filter((resolution): resolution is NameResolution => {
+    if (!resolution || seen.has(resolution.key)) return false;
+    seen.add(resolution.key);
+    return true;
+  });
+}
+
+async function resolveName(name: string, typed: string): Promise<NameResolution | null> {
+  const key = name.trim();
+  if (key.length < 3) return null;
+  const tokens = key.split(/\s+/);
+
+  const live = await listRxNormVariants(key);
+  if (live.length > 0 || (tokens.length === 1 && catalogDrug(key))) {
+    const expanded = compact(key) !== compact(typed);
+    return {
+      key,
+      typed,
+      variants: live.map(toStagingVariant),
+      corrected: expanded,
+      confidence: expanded ? 95 : 100,
+      suggestions: [],
+    };
+  }
+
+  const corrections = await Promise.all(tokens.map((token) => correctDrugToken(token)));
+  const plausible = corrections.every(
+    (correction, index) =>
+      !correction.wasSpellCorrected ||
+      correction.confidenceScore >= 68 && similarity(tokens[index], correction.lookupKey) >= 0.6,
+  );
+  const correctedKey = corrections.map((correction, index) => correction.lookupKey || tokens[index]).join(" ");
+  if (!plausible || correctedKey === key) return null;
+
+  const fixed = await listRxNormVariants(correctedKey);
+  if (fixed.length === 0 && !(tokens.length === 1 && catalogDrug(correctedKey))) return null;
+  return {
+    key: correctedKey,
+    typed,
+    variants: fixed.map(toStagingVariant),
+    corrected: true,
+    confidence: Math.min(...corrections.map((correction) => correction.confidenceScore)),
+    suggestions: tokens.length === 1 ? corrections[0].suggestions : [],
+  };
+}
+
+function buildDraft(norm: NormalizedMedication, resolution: NameResolution): MedicationDraft {
+  const variants = resolution.variants.length > 0 ? resolution.variants : fallbackVariants(resolution.key);
+
+  const strengthGroups = groupBy(
+    variants,
+    (variant) => displayStrength(variant.strength),
+    (variant) => strengthKey(variant.strength) || variant.strength,
+  );
   strengthGroups.sort((left, right) => strengthRank(left.label) - strengthRank(right.label));
+  const typedStrength = norm.strengths[0];
+  let selectedStrength = typedStrength
+    ? matchStrengthLabel(
+        strengthGroups.map((group) => group.label),
+        typedStrength,
+      )
+    : undefined;
+  if (!selectedStrength && typedStrength && variants.length === 0) {
+    selectedStrength = displayStrength(hasStrengthUnit(typedStrength) ? typedStrength : `${typedStrength} mg`);
+    strengthGroups.unshift({ label: selectedStrength, variants: [] });
+  }
+  if (!typedStrength && strengthGroups.length === 1) selectedStrength = strengthGroups[0].label;
 
   const formGroups = groupBy(variants, (variant) => variant.dosageForm);
   formGroups.sort((left, right) => formRank(left.label) - formRank(right.label));
-  if (formGroups.length === 0) {
-    formGroups.push({ label: "Oral Tablet", variants: [] });
-  }
-
-  const selectedStrengthLabels = extractedStrength
-    ? strengthGroups.filter((group) => sameStrength(group.label, extractedStrength)).map((group) => group.label)
-    : [];
-  const selectedFormLabels = chooseForms(formGroups.map((group) => group.label), {
-    extended: explicitExtended,
-    capsule: explicitCapsule,
-    tablet: explicitTablet,
-  });
+  if (formGroups.length === 0) formGroups.push({ label: "Oral Tablet", variants: [] });
+  const selectedForms = chooseForms(
+    formGroups.map((group) => group.label),
+    norm.hints,
+  );
 
   const strengths = strengthGroups.map((group) => ({
     label: group.label,
-    selected: selectedStrengthLabels.includes(group.label),
+    selected: group.label === selectedStrength,
     variants: group.variants,
   }));
   const forms = formGroups.map((group) => ({
     label: group.label,
-    selected: selectedFormLabels.includes(group.label),
+    selected: selectedForms.includes(group.label),
     variants: group.variants,
   }));
+  const explicitForm = Object.values(norm.hints).some(Boolean);
 
   return {
-    id: `draft-${index}-${lookupKey.replace(/\s+/g, "-") || "drug"}`,
-    rawLine,
-    drugName,
-    originalTypedName: spelling.originalTypedName || drugKey,
-    wasSpellCorrected: spelling.wasSpellCorrected,
-    confidenceScore: spelling.confidenceScore,
-    spellingSuggestions: spelling.suggestions,
-    dailyFrequency,
-    monthlyQuantity: dailyFrequency * 30,
-    status: draftStatus(strengths, forms, explicitExtended || explicitCapsule || explicitTablet),
+    id: resolution.key.replace(/\s+/g, "-") || "drug",
+    rawLine: norm.rawLine,
+    drugName: displayName(resolution.key, variants),
+    originalTypedName: resolution.typed || norm.rawLine,
+    wasSpellCorrected: resolution.corrected,
+    confidenceScore: resolution.confidence,
+    spellingSuggestions: resolution.suggestions,
+    typedStrength: typedStrength ? (hasStrengthUnit(typedStrength) ? typedStrength : `${typedStrength} mg`) : null,
+    dailyFrequency: norm.dailyFrequency,
+    monthlyQuantity: norm.monthlyQuantity,
+    status: draftStatus(strengths, forms, explicitForm),
     strengths,
     forms,
   };
@@ -223,32 +288,57 @@ function draftStatus(strengths: StagingOption[], forms: StagingOption[], explici
   return "READY";
 }
 
-function chooseForms(labels: string[], hint: { extended: boolean; capsule: boolean; tablet: boolean }) {
-  if (hint.extended) {
-    const extended = labels.filter((label) => /extended/i.test(label));
-    if (extended.length > 0) return extended;
+const FORM_RULES: [keyof FormHints, RegExp][] = [
+  ["pen", /pen|injector|prefilled/i],
+  ["inhaler", /inhal|aerosol|powder/i],
+  ["patch", /patch|transdermal/i],
+  ["cream", /cream/i],
+  ["ointment", /ointment/i],
+  ["drops", /ophthalmic|otic|drop/i],
+  ["solution", /solution|suspension|syrup|elixir/i],
+  ["injection", /inject|vial/i],
+  ["disintegrating", /disintegrating/i],
+  ["extended", /extended|24 hr|12 hr/i],
+  ["delayed", /delayed/i],
+  ["capsule", /capsule/i],
+];
+
+function chooseForms(labels: string[], hints: FormHints) {
+  let pool = labels;
+  for (const [hint, pattern] of FORM_RULES) {
+    if (!hints[hint]) continue;
+    const narrowed = pool.filter((label) => pattern.test(label));
+    if (narrowed.length > 0) pool = narrowed;
   }
-  if (hint.capsule) {
-    const capsules = labels.filter((label) => /capsule/i.test(label));
-    if (capsules.length > 0) return capsules;
+  if (hints.tablet && !hints.capsule) {
+    const tablets = pool.filter(
+      (label) =>
+        /tablet/i.test(label) &&
+        (hints.extended || !/extended/i.test(label)) &&
+        (hints.delayed || !/delayed/i.test(label)) &&
+        (hints.disintegrating || !/disintegrating/i.test(label)) &&
+        !/chewable|sublingual|buccal/i.test(label),
+    );
+    if (tablets.length > 0) pool = tablets;
   }
-  if (hint.tablet) {
-    const tablets = labels.filter((label) => /tablet/i.test(label) && !/extended/i.test(label));
-    if (tablets.length > 0) return tablets;
-  }
-  const primary = labels.find((label) => /tablet/i.test(label) && !/extended|delayed/i.test(label)) ?? labels[0];
+  if (pool !== labels) return pool;
+  const primary = [...labels].sort((left, right) => formRank(left) - formRank(right))[0];
   return primary ? [primary] : [];
 }
 
-function groupBy(variants: StagingVariant[], labelFor: (variant: StagingVariant) => string) {
-  const groups = new Map<string, StagingVariant[]>();
+function groupBy(
+  variants: StagingVariant[],
+  labelFor: (variant: StagingVariant) => string,
+  keyFor: (variant: StagingVariant) => string = labelFor,
+) {
+  const groups = new Map<string, { label: string; variants: StagingVariant[] }>();
   for (const variant of variants) {
-    const label = labelFor(variant);
-    const current = groups.get(label) ?? [];
-    current.push(variant);
-    groups.set(label, current);
+    const key = keyFor(variant);
+    const current = groups.get(key) ?? { label: labelFor(variant), variants: [] };
+    current.variants.push(variant);
+    groups.set(key, current);
   }
-  return [...groups.entries()].map(([label, grouped]) => ({ label, variants: grouped }));
+  return [...groups.values()];
 }
 
 function fallbackVariants(drugKey: string): StagingVariant[] {
@@ -274,21 +364,20 @@ function fallbackVariants(drugKey: string): StagingVariant[] {
   );
 }
 
-function fallbackName(drugKey: string) {
-  return FALLBACK_CATALOG[drugKey]?.name ?? catalogDrug(drugKey)?.canonicalName ?? displayDrugName(drugKey);
-}
-
-function displayDrugName(drugKey: string) {
+function displayName(drugKey: string, variants: StagingVariant[]) {
+  const known = FALLBACK_CATALOG[drugKey]?.name ?? catalogDrug(drugKey)?.canonicalName;
+  if (known) return known;
   const titled = drugKey.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
-  return drugKey.includes(" ") && !drugKey.includes("/") ? titled.replace(/\s+/, " / ") : titled;
+  const combo = variants.length > 0 && variants.every((variant) => variant.fullName.includes(" / "));
+  return combo && !titled.includes("/") ? titled.split(/\s+/).join(" / ") : titled;
 }
 
 function displayStrength(value: string) {
-  return value.replace(/\s+/g, " ").trim().replace(/\b(mg|mcg|ml|g)\b/gi, (unit) => unit.toLowerCase());
-}
-
-function sameStrength(left: string, right: string) {
-  return left.toLowerCase().replace(/\s+/g, "") === right.toLowerCase().replace(/\s+/g, "");
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\bUNT\b/g, "units")
+    .replace(/\b(mg|mcg|ml|g|meq)\b/gi, (unit) => unit.toLowerCase());
 }
 
 function strengthRank(label: string) {
@@ -297,10 +386,16 @@ function strengthRank(label: string) {
 
 function formRank(label: string) {
   const text = label.toLowerCase();
-  if (text.includes("tablet") && !text.includes("extended") && !text.includes("delayed")) return 0;
-  if (text.includes("extended")) return 1;
-  if (text.includes("capsule")) return 2;
-  return 3;
+  if (text === "oral tablet") return 0;
+  if (text === "oral capsule") return 1;
+  if (text.includes("tablet") && !/extended|delayed|chewable|sublingual|disintegrating/.test(text)) return 2;
+  if (text.includes("extended")) return 3;
+  if (text.includes("capsule")) return 4;
+  return 5;
+}
+
+function compact(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function toStagingVariant(variant: ResolvedVariant): StagingVariant {
@@ -313,4 +408,49 @@ function toStagingVariant(variant: ResolvedVariant): StagingVariant {
     isExtendedRelease: variant.isExtendedRelease,
     isBrand: variant.isBrand,
   };
+}
+
+async function guessDrugNamesWithGemini(text: string) {
+  const parsed = await askGemini<{ drugs?: string[] }>(
+    `This text was typed into a Medicare drug list. It may be misspelled, abbreviated, or mixed with directions: "${text}". Return the drug names it most likely refers to, one name per drug mentioned (keep a brand name as the brand, do not also list its generic), as US names found in RxNorm, without strength or directions. Do not add drugs that are not mentioned. Return JSON {"drugs":["..."]}, or {"drugs":[]} if it is not a medication.`,
+  );
+  return (parsed?.drugs ?? []).map((name) => name.trim()).filter((name) => name.length > 2);
+}
+
+async function askGemini<T>(prompt: string): Promise<T | null> {
+  if (!process.env.GEMINI_API_KEY) return null;
+  try {
+    const response = await fetch(
+      geminiGenerateUrl(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0, responseMimeType: "application/json" },
+        }),
+        signal: AbortSignal.timeout(20000),
+      },
+    );
+    if (!response.ok) return null;
+    const body = await response.json();
+    const raw = body?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>) {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await run(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

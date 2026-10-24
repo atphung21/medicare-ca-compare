@@ -1,3 +1,4 @@
+import { geminiGenerateUrl } from "@/lib/gemini";
 import { z } from "zod";
 import { coarseDosageForm, type DosageForm } from "@/schemas/medicare";
 import { resolveDrugDosageForms, type DrugResolutionResult } from "@/services/rxnorm-resolver";
@@ -92,7 +93,7 @@ async function extractWithOpenAI(bytes: Buffer, mimeType: string) {
 
 async function extractWithGemini(bytes: Buffer, mimeType: string) {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    geminiGenerateUrl(),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -1,3 +1,4 @@
+import { strengthKey } from "@/lib/strength";
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
 
 export interface DrugResolutionResult {
@@ -67,7 +68,7 @@ export async function resolveDrugDosageForms(rawInput: string): Promise<DrugReso
     : variants;
   if (matching.length === 0) matching = variants;
   if (!comboQuery && !query.includes("/") && !/\band\b/i.test(query)) {
-    const singleIngredient = matching.filter((variant) => !variant.fullName.includes("/"));
+    const singleIngredient = matching.filter((variant) => !isComboVariant(variant));
     if (singleIngredient.length > 0) matching = singleIngredient;
   }
   matching = preferNamedProduct(baseDrugName, matching);
@@ -156,11 +157,35 @@ function dedupe(variants: ResolvedVariant[]) {
 export async function listRxNormVariants(drugName: string): Promise<ResolvedVariant[]> {
   const combo = isComboDrugName(drugName);
   let variants = await fetchVariants(drugName);
-  if (variants.length === 0 && combo) {
-    variants = await fetchVariants(drugName.split(/\s+/).filter(Boolean).join(" / "));
+  if (!combo) {
+    const singles = variants.filter((variant) => !isComboVariant(variant));
+    return dedupePreferGeneric(singles.length > 0 ? singles : variants);
   }
-  const relevant = combo ? variants.filter((variant) => variant.fullName.includes("/")) : variants.filter((variant) => !variant.fullName.includes("/"));
-  return dedupePreferGeneric(relevant);
+
+  const words = drugName.toLowerCase().split(/\s+/).filter(Boolean);
+  // A multi-word single drug, such as "insulin glargine" or "potassium chloride", has no " / " in its RxNorm names.
+  const single = variants.filter(
+    (variant) => !isComboVariant(variant) && words.every((word) => variant.fullName.toLowerCase().includes(word)),
+  );
+  if (single.length > 0) return dedupePreferGeneric(single);
+
+  // RxNorm lists combination ingredients alphabetically, such as "hydrochlorothiazide / losartan".
+  for (const query of [words.join(" / "), [...words].sort().join(" / ")]) {
+    if (variants.some((variant) => isComboVariant(variant) && containsAll(variant, words))) break;
+    const joined = await fetchVariants(query);
+    if (joined.some(isComboVariant)) variants = joined;
+  }
+  const combos = variants.filter((variant) => isComboVariant(variant) && containsAll(variant, words));
+  return dedupePreferGeneric(combos.length > 0 ? combos : variants.filter(isComboVariant));
+}
+
+function containsAll(variant: ResolvedVariant, words: string[]) {
+  const name = variant.fullName.toLowerCase();
+  return words.every((word) => name.includes(word));
+}
+
+function isComboVariant(variant: ResolvedVariant) {
+  return variant.fullName.includes(" / ");
 }
 
 function isComboDrugName(name: string) {
@@ -198,14 +223,23 @@ function dedupePreferGeneric(variants: ResolvedVariant[]) {
   return [...unique.values()];
 }
 
-function parseRxNormName(rxcui: string, name: string, isBrand: boolean): ResolvedVariant | null {
+function parseRxNormName(rxcui: string, fullName: string, isBrand: boolean): ResolvedVariant | null {
+  const name = fullName.replace(/^\d+(?:\.\d+)?\s*(?:ML|ACTUAT)\s+/i, "");
+  const perDose = name.match(
+    /^(.*?\d\s*(?:MG|MCG|UNT))\s+Dose\s+(?:\d+(?:\.\d+)?\s*ML\s+)?.*?\d\s*(?:MG|MCG|UNT)\/ML\s+(.+)$/i,
+  );
+  if (perDose) {
+    const dosageForm = perDose[2].replace(/\[.*?\]/g, "").replace(/\s+/g, " ").trim();
+    if (!dosageForm) return null;
+    return variantFrom(rxcui, fullName, perDose[1].replace(/\s*,\s*/g, ", ").toUpperCase(), dosageForm, isBrand);
+  }
   const combo = name.match(
     /(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)\s*\/\s*[a-z].+?\s+(\d+(?:\.\d+)?)\s*(MG|MCG|ML|UNT|MEQ|G|%)\s+(.+)$/i,
   );
   if (combo) {
     const dosageForm = combo[5].replace(/\[.*?\]/g, "").replace(/\s+/g, " ").trim();
     if (!dosageForm) return null;
-    return variantFrom(rxcui, name, `${combo[1]} ${combo[2]} / ${combo[3]} ${combo[4]}`.toUpperCase(), dosageForm, isBrand);
+    return variantFrom(rxcui, fullName, `${combo[1]} ${combo[2]} / ${combo[3]} ${combo[4]}`.toUpperCase(), dosageForm, isBrand);
   }
   const strengthMatch = name.match(/(\d+(?:\.\d+)?\s*(?:MG|MCG|ML|UNT|MEQ|G|%)(?:\/(?:ML|ACTUAT|HR|DOSE))?)/i);
   if (!strengthMatch || strengthMatch.index === undefined) return null;
@@ -215,7 +249,7 @@ function parseRxNormName(rxcui: string, name: string, isBrand: boolean): Resolve
     .replace(/\s+/g, " ")
     .trim();
   if (!dosageForm) return null;
-  return variantFrom(rxcui, name, strengthMatch[1].toUpperCase(), dosageForm, isBrand);
+  return variantFrom(rxcui, fullName, strengthMatch[1].toUpperCase(), dosageForm, isBrand);
 }
 
 function variantFrom(rxcui: string, name: string, strength: string, dosageForm: string, isBrand: boolean): ResolvedVariant {
@@ -231,7 +265,7 @@ function variantFrom(rxcui: string, name: string, strength: string, dosageForm: 
 }
 
 function normalizeStrength(value: string) {
-  return value.toUpperCase().replace(/\s+/g, "");
+  return strengthKey(value) || value.toUpperCase().replace(/\s+/g, "");
 }
 
 function emptyResult(query: string): DrugResolutionResult {
