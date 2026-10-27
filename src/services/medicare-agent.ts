@@ -376,17 +376,23 @@ async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResul
     if (await isVisible(drugList, 1500))
       await drugList.scrollIntoViewIfNeeded().catch(() => undefined);
     await saveProofShot(page, dir, "drugs.png", false);
-    const finishedDrugs =
-      (await clickIfVisible(
-        page,
-        page.getByRole("button", { name: /done adding drugs/i }),
-        2500,
-      )) ||
-      (await clickIfVisible(
-        page,
-        page.getByRole("button", { name: /^continue$/i }),
-        5000,
-      ));
+    const doneAdding = page.getByRole("button", { name: /done adding drugs/i });
+    const continueDrugs = page.getByRole("button", { name: /^continue$/i });
+    const leaveDrugs = await Promise.race([
+      doneAdding
+        .first()
+        .waitFor({ state: "visible", timeout: 5000 })
+        .then(() => doneAdding)
+        .catch(() => null),
+      continueDrugs
+        .first()
+        .waitFor({ state: "visible", timeout: 5000 })
+        .then(() => continueDrugs)
+        .catch(() => null),
+    ]);
+    const finishedDrugs = leaveDrugs
+      ? await clickIfVisible(page, leaveDrugs, 1000)
+      : false;
     if (!finishedDrugs) {
       return await stop(
         page,
@@ -442,13 +448,17 @@ async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResul
     const providers = page
       .getByRole("button", { name: /skip adding providers/i })
       .or(page.getByRole("link", { name: /skip adding providers/i }));
-    if (
-      !(await page
-        .waitForURL(/search-results/i, { timeout: 4000 })
-        .then(() => true)
-        .catch(() => false))
-    ) {
-      await clickIfVisible(page, providers, 8000);
+    const resultsNow = page
+      .waitForURL(/search-results/i, { timeout: 8000 })
+      .then(() => "results" as const)
+      .catch(() => "pending" as const);
+    const skipNow = providers
+      .first()
+      .waitFor({ state: "visible", timeout: 8000 })
+      .then(() => "skip" as const)
+      .catch(() => "pending" as const);
+    if ((await Promise.race([resultsNow, skipNow])) === "skip") {
+      await clickIfVisible(page, providers, 1000);
     }
 
     step = "results";
