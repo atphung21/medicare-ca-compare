@@ -8,6 +8,7 @@ const ProofRequestSchema = CompareRequestSchema.extend({
   planId: z.string().optional(),
   proofId: z.string().optional(),
   planTypeFilter: PlanCategorySchema.optional(),
+  pauseForMissing: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {

@@ -374,22 +374,42 @@ const tools: AssistantTool[] = [
     async run(_args, session) {
       const { request, problem } = compareRequest(session);
       if (!request) return { ok: false, result: { error: problem }, summary: problem ?? "Not ready" };
-      const proof = await captureMedicareProof({ ...request, planTypeFilter: session.planType });
+      const proof = await captureMedicareProof({ ...request, planTypeFilter: session.planType, pauseForMissing: false });
+      const missing = proof.missing ?? [];
+      const missingImages = missing
+        .filter((drug) => drug.image)
+        .map((drug) => ({ label: `Not found: ${drug.name}`, src: `/api/medicare/proof/${proof.proofId}/${drug.image}` }));
+      const notFound = missing.map((drug) => ({ name: drug.name, strength: drug.strength || null, reason: drug.reason }));
+      const missingNote = missing.length
+        ? `; not found automatically: ${missing.map((drug) => drug.name).join(", ")} (add by hand on Medicare.gov)`
+        : "";
       if (!proof.ok) {
         return {
           ok: false,
-          result: { error: proof.error, step: proof.step },
-          summary: `Medicare.gov stopped at ${proof.step}: ${proof.error}`,
-          images: proof.imageFile ? [{ label: "Where it stopped", src: `/api/medicare/proof/${proof.proofId}/${proof.imageFile}` }] : undefined,
+          result: { error: proof.error, step: proof.step, not_found: notFound },
+          summary: `Medicare.gov stopped at ${proof.step}: ${proof.error}${missingNote}`,
+          images: [
+            ...(proof.imageFile ? [{ label: "Where it stopped", src: `/api/medicare/proof/${proof.proofId}/${proof.imageFile}` }] : []),
+            ...missingImages,
+          ],
           link: proof.medicareGovUrl,
         };
       }
-      const images = proof.images.length > 0
-        ? proof.images.map((image) => ({ label: image.label, src: `/api/medicare/proof/${proof.proofId}/${image.file}` }))
-        : [{ label: "Medicare.gov results", src: `/api/medicare/proof/${proof.proofId}/${proof.imageFile}` }];
+      const images = [
+        ...(proof.images.length > 0
+          ? proof.images.map((image) => ({ label: image.label, src: `/api/medicare/proof/${proof.proofId}/${image.file}` }))
+          : [{ label: "Medicare.gov results", src: `/api/medicare/proof/${proof.proofId}/${proof.imageFile}` }]),
+        ...missingImages,
+      ];
       return {
-        result: { captured: images.map((image) => image.label), medicare_gov_url: proof.medicareGovUrl, skipped_supplies: proof.skipped ?? [] },
-        summary: `Captured ${images.length} Medicare.gov screenshot${images.length === 1 ? "" : "s"}${proof.skipped?.length ? `; skipped ${proof.skipped.join(", ")} (not on Medicare.gov's list: supplies are usually Part B, OTC items usually aren't Part D)` : ""}`,
+        result: {
+          captured: images.map((image) => image.label),
+          medicare_gov_url: proof.medicareGovUrl,
+          skipped_supplies: proof.skipped ?? [],
+          not_found: notFound,
+          ...(missing.length ? { note: "These prices leave out the not-found drugs; tell the user to add them by hand on Medicare.gov." } : {}),
+        },
+        summary: `Captured ${images.length} Medicare.gov screenshot${images.length === 1 ? "" : "s"}${proof.skipped?.length ? `; skipped ${proof.skipped.join(", ")} (not on Medicare.gov's list: supplies are usually Part B, OTC items usually aren't Part D)` : ""}${missingNote}`,
         images,
         link: proof.medicareGovUrl,
       };

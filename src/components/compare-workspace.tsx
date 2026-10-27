@@ -160,7 +160,51 @@ type ProofResult = {
   pdf: boolean;
   images: { label: string; src: string }[];
   skipped: string[];
+  /** Drugs Medicare.gov's search could not add automatically. */
+  missing: { name: string; strength: string; reason: string; src: string }[];
+  /** The visible Medicare.gov window is waiting on the drug list for the user. */
+  paused: boolean;
 };
+
+type ProofResponse = {
+  ok?: boolean;
+  proofId?: string;
+  medicareGovUrl?: string;
+  error?: string;
+  pdf?: boolean;
+  imageFile?: string;
+  images?: { label: string; file: string }[];
+  skipped?: string[];
+  missing?: { name: string; strength?: string; reason?: string; image?: string }[];
+  paused?: boolean;
+};
+
+function readProof(data: ProofResponse): ProofResult {
+  // drugs.png is taken again after a pause, so each response gets fresh image URLs.
+  const version = Date.now();
+  const id = data.proofId ?? null;
+  const missing = (Array.isArray(data.missing) ? data.missing : []).map((drug) => ({
+    name: drug.name,
+    strength: drug.strength ?? "",
+    reason: drug.reason ?? "",
+    src: id && drug.image ? `/api/medicare/proof/${id}/${drug.image}?v=${version}` : "",
+  }));
+  return {
+    id,
+    url: data.medicareGovUrl ?? "https://www.medicare.gov/plan-compare/",
+    error: data.ok ? "" : (data.error ?? "Medicare.gov proof is unavailable."),
+    pdf: Boolean(data.ok && data.pdf),
+    images: [
+      ...proofShots(data).map((image) => ({ ...image, src: `${image.src}?v=${version}` })),
+      ...missing
+        .filter((drug) => drug.src)
+        .map((drug) => ({ label: `Not found: ${drug.name}`, src: drug.src })),
+    ],
+    skipped: Array.isArray(data.skipped) ? data.skipped : [],
+    missing,
+    paused: Boolean(data.paused),
+  };
+}
 
 /** A drug card written back as text the medication reader understands, such as "Furosemide 40 mg Oral Tablet". */
 function readingFor(drug: DrugInput) {
@@ -961,6 +1005,10 @@ export function CompareWorkspace() {
     if (!county) return;
     const key = proofKey;
     const cached = proofs[key];
+    if (cached?.paused && cached.id) {
+      await continueProof(cached);
+      return;
+    }
     if (cached && !cached.error) {
       setOpenProofKey(key);
       return;
@@ -982,34 +1030,51 @@ export function CompareWorkspace() {
           medications,
           pharmacies: selectedPharmacies,
           planTypeFilter: planType,
+          pauseForMissing: true,
         }),
       });
-      const data = await response.json();
-      result = {
-        id: data.proofId ?? null,
-        url: data.medicareGovUrl ?? "https://www.medicare.gov/plan-compare/",
-        error: data.ok
-          ? ""
-          : (data.error ?? "Medicare.gov proof is unavailable."),
-        pdf: Boolean(data.ok && data.pdf),
-        images: proofShots(data),
-        skipped: Array.isArray(data.skipped) ? data.skipped : [],
-      };
+      result = readProof(await response.json());
     } catch {
       result = {
-        id: null,
+        ...readProof({}),
         url: "",
         error:
           "Medicare.gov proof could not be captured. The sample comparison is still available.",
-        pdf: false,
-        images: [],
-        skipped: [],
       };
     } finally {
       setProofLoading(false);
     }
     setProofs((current) => ({ ...current, [key]: result }));
-    if (result.images.length > 0) setOpenProofKey(key);
+    if (result.images.length > 0 && !result.paused) setOpenProofKey(key);
+  }
+
+  /** Finishes a proof that paused so the user could add missing drugs by hand on Medicare.gov. */
+  async function continueProof(paused: ProofResult) {
+    if (!paused.id) return;
+    const key = proofKey;
+    setProofLoading(true);
+    let result: ProofResult;
+    try {
+      const response = await fetch(
+        `/api/medicare/proof/${encodeURIComponent(paused.id)}/continue`,
+        { method: "POST" },
+      );
+      const next = readProof(await response.json());
+      result = {
+        ...next,
+        id: next.id ?? paused.id,
+        missing: next.missing.length > 0 ? next.missing : paused.missing,
+      };
+    } catch {
+      result = {
+        ...paused,
+        error: "Could not reach the app to continue. Try Continue again.",
+      };
+    } finally {
+      setProofLoading(false);
+    }
+    setProofs((current) => ({ ...current, [key]: result }));
+    if (result.images.length > 0 && !result.paused) setOpenProofKey(key);
   }
 
   const splitTip =
@@ -1793,8 +1858,12 @@ export function CompareWorkspace() {
                         className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
                       >
                         {proofLoading
-                          ? "Opening Medicare.gov…"
-                          : proof && !proof.error
+                          ? proof?.paused
+                            ? "Finishing on Medicare.gov…"
+                            : "Opening Medicare.gov…"
+                          : proof?.paused
+                            ? "Continue to pharmacies and plans"
+                            : proof && !proof.error
                             ? "View Medicare.gov proof"
                             : "Capture Medicare.gov proof"}
                       </button>
@@ -1854,6 +1923,54 @@ export function CompareWorkspace() {
                     <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">
                       {skippedNote(proof.skipped)}
                     </p>
+                  ) : null}
+                  {proof && proof.missing.length > 0 ? (
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+                      <p className="font-medium">
+                        {proof.paused
+                          ? `Medicare.gov couldn't add ${proof.missing.length === 1 ? "1 drug" : `${proof.missing.length} drugs`} automatically. The Medicare.gov window is waiting on the drug list: add ${proof.missing.length === 1 ? "it" : "them"} there by hand, then click Continue.`
+                          : `Not found automatically (${proof.missing.length}). Add ${proof.missing.length === 1 ? "this drug" : "these drugs"} by hand on Medicare.gov to price ${proof.missing.length === 1 ? "it" : "them"}.`}
+                      </p>
+                      <ul className="mt-2 space-y-2">
+                        {proof.missing.map((drug) => (
+                          <li key={drug.name} className="flex items-start gap-3">
+                            {drug.src ? (
+                              <button
+                                type="button"
+                                className="shrink-0"
+                                onClick={() => setOpenProofKey(proofKey)}
+                                aria-label={`Screenshot for ${drug.name}`}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={drug.src}
+                                  alt=""
+                                  className="h-14 w-20 rounded border border-amber-200 object-cover object-top"
+                                />
+                              </button>
+                            ) : null}
+                            <div>
+                              <p className="font-medium">
+                                {[drug.name, drug.strength].filter(Boolean).join(" ")}
+                              </p>
+                              <p className="text-xs text-amber-900">{drug.reason}</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      {proof.paused ? (
+                        <button
+                          type="button"
+                          onClick={() => void continueProof(proof)}
+                          disabled={proofLoading}
+                          className="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
+                        >
+                          {proofLoading
+                            ? "Finishing on Medicare.gov…"
+                            : "Continue to pharmacies and plans"}
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                   {proof && proof.images.length > 0 ? (
                     <button

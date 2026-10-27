@@ -218,6 +218,8 @@ const COMPOUND_NAMES = new Set([
   "sodium chloride",
   "sodium fluoride",
   "ferrous sulfate",
+  "metoprolol succinate",
+  "metoprolol tartrate",
   "ferrous fumarate",
   "ferrous gluconate",
   "zinc sulfate",

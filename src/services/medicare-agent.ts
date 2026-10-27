@@ -24,6 +24,20 @@ export interface ProofCaptureInput extends CompareRequest {
   planId?: string;
   proofId?: string;
   planTypeFilter?: PlanCategory;
+  /**
+   * When a drug can't be added and the browser window is visible, stop on Medicare.gov's drug list
+   * so the user can add it by hand, then finish with continueMedicareProof.
+   */
+  pauseForMissing?: boolean;
+}
+
+/** A prescription drug the proof could not add to Medicare.gov's drug list. */
+export interface MissingDrug {
+  name: string;
+  strength: string;
+  reason: string;
+  /** Screenshot of what Medicare.gov showed, in the proof folder. */
+  image?: string;
 }
 
 export type ProofCaptureResult =
@@ -37,6 +51,9 @@ export type ProofCaptureResult =
       step?: WizardStep;
       /** Supplies Medicare.gov's drug search does not list. */
       skipped?: string[];
+      missing?: MissingDrug[];
+      /** Waiting on Medicare.gov's drug list for the user; finish with continueMedicareProof. */
+      paused?: boolean;
     }
   | {
       ok: false;
@@ -45,7 +62,26 @@ export type ProofCaptureResult =
       error: string;
       step: WizardStep;
       imageFile: string;
+      missing?: MissingDrug[];
+      /** Still waiting for the user; continueMedicareProof can be tried again. */
+      paused?: boolean;
     };
+
+interface ProofSession {
+  browser: Browser;
+  page: Page;
+  input: ProofCaptureInput;
+  dir: string;
+  proofId: string;
+  missing: MissingDrug[];
+  skipped: string[];
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const PAUSE_MS = 30 * 60 * 1000;
+/** Kept on globalThis so a dev-server reload doesn't lose a window the user is still working in. */
+const pausedProofs: Map<string, ProofSession> = ((globalThis as { __medicarePausedProofs?: Map<string, ProofSession> })
+  .__medicarePausedProofs ??= new Map());
 
 function planFinderUrl(contractYear: "2026" | "2027") {
   return `https://www.medicare.gov/plan-compare/#/?lang=en&year=${contractYear}`;
@@ -86,6 +122,11 @@ export async function captureMedicareProof(
 
   const headless = process.env.PLAYWRIGHT_HEADLESS !== "false";
   const { chromium } = await loadPlaywright();
+  for (const [id, paused] of pausedProofs) {
+    clearTimeout(paused.timer);
+    pausedProofs.delete(id);
+    await paused.browser.close().catch(() => undefined);
+  }
   if (proofBrowser) await proofBrowser.close().catch(() => undefined);
   const browser = await chromium.launch({ headless });
   proofBrowser = browser;
@@ -94,6 +135,7 @@ export async function captureMedicareProof(
   });
   let step: WizardStep = "zip";
   const skipped: string[] = [];
+  const missing: MissingDrug[] = [];
   try {
     await page.goto(planFinderUrl(input.contractYear), {
       waitUntil: "domcontentloaded",
@@ -246,24 +288,44 @@ export async function captureMedicareProof(
 
     step = "drugs";
     const searchLog: DrugSearchLog[] = [];
+    let searchLost = false;
     for (const medication of input.medications) {
+      const label = [medication.name, medication.strength].filter(Boolean).join(" ");
+      if (searchLost) {
+        missing.push({
+          name: medication.name,
+          strength: medication.strength,
+          reason: "Not tried: Medicare.gov's drug search did not come back after an earlier drug.",
+        });
+        continue;
+      }
       const result = await addMedication(page, medication, searchLog);
       if (result === "added") continue;
       if (result === "not-listed" && (medication.isSupply || medication.isOtc)) {
         skipped.push(medication.name);
+        await recoverDrugSearch(page);
         continue;
       }
-      await writeSearchLog(dir, searchLog);
-      return await stop(
-        page,
-        dir,
-        proofId,
-        "drugs",
-        `Could not add ${medication.name} with its resolved strength and form.${offeredText(searchLog.at(-1))}`,
-      );
+      const image = `missing-${missing.length + 1}.png`;
+      const shot = await saveProofShot(page, dir, image, true)
+        .then(() => true)
+        .catch(() => false);
+      missing.push({
+        name: medication.name,
+        strength: medication.strength,
+        reason: `${
+          result === "not-listed"
+            ? `Medicare.gov's drug search had no match for ${label}.`
+            : `Medicare.gov did not take ${label} with its resolved strength and form.`
+        }${offeredText(searchLog.at(-1))}`,
+        ...(shot ? { image } : {}),
+      });
+      searchLost = !(await recoverDrugSearch(page));
     }
     await writeSearchLog(dir, searchLog);
-    if (skipped.length === input.medications.length) {
+    await returnToDrugList(page);
+    const added = input.medications.length - skipped.length - missing.length;
+    if (missing.length === 0 && added === 0) {
       return await stop(
         page,
         dir,
@@ -272,8 +334,41 @@ export async function captureMedicareProof(
         `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not on Medicare.gov's drug list. Supplies like test strips are usually covered under Part B; vitamins and other over-the-counter items usually aren't covered by Part D.`,
       );
     }
+    const session: ProofSession = { browser, page, input, dir, proofId, missing, skipped };
+    if (missing.length > 0 && !headless && input.pauseForMissing) {
+      return await pauseForMissingDrugs(session);
+    }
+    if (added === 0) {
+      return {
+        ...(await stop(
+          page,
+          dir,
+          proofId,
+          "drugs",
+          `None of the drugs could be added automatically: ${missing.map((drug) => drug.name).join(", ")}.`,
+        )),
+        missing,
+      };
+    }
+    return withLists(await finishFromDrugs(session), session);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "The Medicare.gov wizard stopped.";
+    return { ...(await stop(page, dir, proofId, step, message)), missing };
+  }
+}
+
+/** Shows the drug list, then goes through Done adding drugs, pharmacies and the plan results. */
+async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResult> {
+  const { page, dir, proofId, input, skipped, missing } = session;
+  let step: WizardStep = "drugs";
+  try {
+    await returnToDrugList(page);
+    const notAdded = new Set([...skipped, ...missing.map((drug) => drug.name)]);
     const lastDrug = input.medications
-      .filter((medication) => !skipped.includes(medication.name))
+      .filter((medication) => !notAdded.has(medication.name))
       .at(-1)?.name;
     const drugList = lastDrug
       ? page.getByText(lastDrug, { exact: false }).last()
@@ -447,6 +542,143 @@ export async function captureMedicareProof(
   }
 }
 
+function withLists(result: ProofCaptureResult, session: ProofSession): ProofCaptureResult {
+  return result.ok
+    ? { ...result, skipped: session.skipped, missing: session.missing }
+    : { ...result, missing: session.missing };
+}
+
+/** Leaves the visible window on Medicare.gov's drug list so the user can add the missing drugs by hand. */
+async function pauseForMissingDrugs(session: ProofSession): Promise<ProofCaptureResult> {
+  const { page, dir, proofId, missing, skipped } = session;
+  await page
+    .getByRole("heading", { name: /your drugs|drug list/i })
+    .first()
+    .scrollIntoViewIfNeeded({ timeout: 1500 })
+    .catch(() => undefined);
+  await saveProofShot(page, dir, "drugs.png", false).catch(() => undefined);
+  await writeMeta(dir, page.url(), "drugs");
+  await page.bringToFront().catch(() => undefined);
+  keepPaused(session);
+  return {
+    ok: true,
+    paused: true,
+    proofId,
+    medicareGovUrl: page.url(),
+    imageFile: "drugs.png",
+    images: [{ label: "Drugs added automatically", file: "drugs.png" }],
+    pdf: false,
+    step: "drugs",
+    skipped,
+    missing,
+  };
+}
+
+function keepPaused(session: ProofSession) {
+  clearTimeout(session.timer);
+  session.timer = setTimeout(() => {
+    pausedProofs.delete(session.proofId);
+    void session.browser.close().catch(() => undefined);
+  }, PAUSE_MS);
+  session.timer.unref?.();
+  pausedProofs.set(session.proofId, session);
+}
+
+/** Finishes a paused proof after the user added drugs by hand: pharmacies, then the plan results. */
+export async function continueMedicareProof(proofId: string): Promise<ProofCaptureResult> {
+  const session = pausedProofs.get(proofId);
+  const gone = {
+    ok: false as const,
+    proofId,
+    medicareGovUrl: "https://www.medicare.gov/plan-compare/",
+    step: "drugs" as const,
+    imageFile: "",
+  };
+  if (!session) {
+    return {
+      ...gone,
+      error: "That Medicare.gov window is no longer open (it closes after 30 minutes or when a new proof starts). Capture the proof again.",
+    };
+  }
+  pausedProofs.delete(proofId);
+  clearTimeout(session.timer);
+  if (session.page.isClosed() || !session.browser.isConnected()) {
+    return { ...gone, error: "The Medicare.gov window was closed. Capture the proof again.", missing: session.missing };
+  }
+  const result = withLists(await finishFromDrugs(session), session);
+  if (!result.ok && result.step === "drugs" && !session.page.isClosed()) {
+    keepPaused(session);
+    return {
+      ...result,
+      paused: true,
+      error: `${result.error} Go back to the drug list in the Medicare.gov window, then click Continue again.`,
+    };
+  }
+  return result;
+}
+
+/** Leaves the add-drug search and opens the list of drugs already added. */
+async function returnToDrugList(page: Page) {
+  const back = page
+    .getByRole("link", { name: /back to (?:your )?drug list/i })
+    .or(page.getByRole("button", { name: /back to (?:your )?drug list/i }))
+    .or(page.getByText(/back to (?:your )?drug list/i));
+  if (await clickIfVisible(page, back, 3000)) {
+    await page
+      .getByRole("button", { name: /done adding drugs/i })
+      .or(page.getByRole("heading", { name: /your drugs|drug list/i }))
+      .first()
+      .waitFor({ state: "visible", timeout: 5000 })
+      .catch(() => undefined);
+    return true;
+  }
+  return false;
+}
+
+/** After a drug fails, leaves the dosage page and brings back the drug search so the next drug can be added. */
+async function recoverDrugSearch(page: Page) {
+  const dosage = page.locator('select[name="dosage"]');
+  const search = page.getByRole("combobox").and(page.locator(":not(select)"));
+  const addAnother = page.getByRole("button", { name: /add another drug/i });
+  const ready = async () => {
+    if (await dosage.isVisible().catch(() => false)) return false;
+    if (await isVisible(search, 800)) {
+      await search.last().fill("").catch(() => undefined);
+      return true;
+    }
+    return isVisible(addAnother, 500);
+  };
+  // The dosage page's control is a link named "Back", not a Cancel button.
+  const leave = page
+    .getByRole("link", { name: /^back(?: to (?:your )?drug list)?$/i })
+    .or(page.getByRole("button", { name: /^(?:cancel|close|back|go back)(?: to (?:your )?drug list)?$/i }))
+    .filter({ visible: true });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await ready()) return true;
+    await page.keyboard.press("Escape").catch(() => undefined);
+    if (await ready()) return true;
+    await clickIfVisible(page, leave, 2000).catch(() => false);
+    await page.waitForTimeout(500);
+  }
+  return ready();
+}
+
+/** Medicare.gov's ZIP field sometimes keeps a leftover digit after fill(); type the five digits ourselves. */
+async function typeZip(zipField: Locator, zip: string) {
+  await zipField.click({ timeout: 2000 }).catch(() => undefined);
+  await zipField.press("ControlOrMeta+A").catch(() => undefined);
+  await zipField.press("Backspace").catch(() => undefined);
+  await zipField.pressSequentially(zip, { delay: 40 });
+  if ((await zipField.inputValue().catch(() => "")) === zip) return;
+  await zipField.evaluate((element, value) => {
+    if (!(element instanceof HTMLInputElement)) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, zip);
+}
+
 async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
   const zipField = page
     .locator('input[name="zipcode"]')
@@ -462,7 +694,7 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
     );
     if (!(await isVisible(zipField, 4000))) return false;
   }
-  await zipField.fill(input.zipCode);
+  await typeZip(zipField, input.zipCode);
   if (!new RegExp(`[?&]year=${input.contractYear}(?:&|$)`).test(page.url())) {
     const yearLabel = input.contractYear === "2026" ? /^2026$/ : /^2027$/;
     const year = page
@@ -473,9 +705,10 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
   const countyRadio = (pattern: RegExp) =>
     page.getByRole("radio", { name: pattern }).or(page.getByLabel(pattern));
   const fullCounty = countyRadio(new RegExp(escapeRegExp(input.countyName), "i"));
-  const county = (await isVisible(fullCounty, 300))
+  const county = (await isVisible(fullCounty, 4000))
     ? fullCounty
     : countyRadio(new RegExp(`\\b${escapeRegExp(countyBaseName(input.countyName))}\\b`, "i"));
+  await isVisible(county, 6000);
   const continueButton = page
     .getByRole("button", { name: /^continue$/i })
     .filter({ visible: true })
@@ -487,6 +720,9 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
         /Medicare Advantage Plan \(Part C\)|Medicare drug plan \(Part D\)|Medigap policy/i,
     });
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if ((await zipField.inputValue().catch(() => "")) !== input.zipCode) {
+      await typeZip(zipField, input.zipCode);
+    }
     if (
       await county
         .first()

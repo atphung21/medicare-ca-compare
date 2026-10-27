@@ -3,7 +3,7 @@ import path from "node:path";
 import { proofDirectory } from "@/services/medicare-agent";
 import { NextResponse } from "next/server";
 
-const ALLOWED = /^(summary\.png|drugs\.png|pharmacies\.png|failure\.png|page\.pdf|meta\.json|[A-Za-z0-9]+-[A-Za-z0-9]+\.png)$/;
+const ALLOWED = /^(summary\.png|drugs\.png|pharmacies\.png|failure\.png|missing-\d+\.png|page\.pdf|meta\.json|[A-Za-z0-9]+-[A-Za-z0-9]+\.png)$/;
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string; file: string }> }) {
   const { id, file } = await context.params;
