@@ -203,9 +203,9 @@ function drugProfile(drug: DrugInput, carrierName: string) {
     }
   }
 
-  // Diabetic supplies are usually billed to Part B, so the sample Part D quote leaves them at $0 and not on the formulary.
+  // Diabetic supplies are usually billed to Part B and OTC vitamins aren't Part D drugs, so the sample quote leaves them at $0 and not on the formulary.
   const uncovered =
-    Boolean(drug.isSupply) ||
+    Boolean(drug.isSupply || drug.isOtc) ||
     (carrierName.includes("Humana") && tier === 5) ||
     (carrierName.includes("Alignment") && drug.dosageForm === "INHALER");
 

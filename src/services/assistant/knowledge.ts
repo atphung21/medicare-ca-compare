@@ -1,17 +1,28 @@
-export type KnowledgeKind = "rule" | "phrase" | "request";
+export type KnowledgeKind = "rule" | "phrase" | "request" | "line" | "otc";
+
+const KINDS: KnowledgeKind[] = ["rule", "phrase", "request", "line", "otc"];
 
 export interface KnowledgeItem {
   /** Random UUID, never reused. */
   id: string;
   kind: KnowledgeKind;
-  /** Rule text, what a phrase means, or the requested change. */
+  /**
+   * Rule text, what a phrase means, or the requested change.
+   * Kind "line": how the line should be read, one drug per ";" (empty means it is not a medication).
+   * Kind "otc": "otc" or "not otc".
+   */
   text: string;
-  /** Kind "phrase": the words as typed on a medication list, lowercase. */
+  /**
+   * Kind "phrase": the words as typed on a medication list, lowercase.
+   * Kind "line": the line's key from medicationLineKey. Kind "otc": the drug name, lowercase.
+   */
   phrase?: string;
-  /** Kind "request": a real line that shows the problem. */
+  /** Kind "request": a real line that shows the problem. Kind "line": the line as first typed. */
   example?: string;
   /** Kind "request". */
   status?: "open" | "done";
+  /** Kind "line": false for a Gemini repair nobody has checked yet. */
+  confirmed?: boolean;
   author: string;
   createdAt: string;
   updatedAt: string;
@@ -45,7 +56,7 @@ function isItem(value: unknown): value is KnowledgeItem {
     typeof item === "object" &&
     item !== null &&
     typeof item.id === "string" &&
-    (item.kind === "rule" || item.kind === "phrase" || item.kind === "request") &&
+    KINDS.includes(item.kind) &&
     typeof item.text === "string" &&
     typeof item.updatedAt === "string"
   );
@@ -102,6 +113,39 @@ export function aliasMap(file: KnowledgeFile) {
   return aliases;
 }
 
+export interface LineFix {
+  id: string;
+  text: string;
+  author: string;
+  confirmed: boolean;
+}
+
+/** Learned readings of whole medication lines, by line key. The newest fix for a key wins. */
+export function lineFixMap(file: KnowledgeFile) {
+  const fixes: Record<string, LineFix> = {};
+  const newest: Record<string, string> = {};
+  for (const item of active(file, "line")) {
+    const key = item.phrase?.trim();
+    if (!key || (newest[key] && item.updatedAt <= newest[key])) continue;
+    newest[key] = item.updatedAt;
+    fixes[key] = { id: item.id, text: item.text.trim(), author: item.author, confirmed: item.confirmed !== false };
+  }
+  return fixes;
+}
+
+/** Drug names marked over the counter (true) or not (false). The newest marking wins. */
+export function otcMap(file: KnowledgeFile) {
+  const marks: Record<string, boolean> = {};
+  const newest: Record<string, string> = {};
+  for (const item of active(file, "otc")) {
+    const name = item.phrase?.trim().toLowerCase();
+    if (!name || (newest[name] && item.updatedAt <= newest[name])) continue;
+    newest[name] = item.updatedAt;
+    marks[name] = item.text.trim().toLowerCase() !== "not otc";
+  }
+  return marks;
+}
+
 export const shortId = (id: string) => id.slice(0, 8);
 
 /** Finds an item by full or short id. */
@@ -117,6 +161,8 @@ export function renderKnowledgeMarkdown(file: KnowledgeFile) {
   const rules = active(file, "rule");
   const phrases = active(file, "phrase");
   const requests = active(file, "request");
+  const lines = active(file, "line");
+  const otc = active(file, "otc");
   const open = requests.filter((item) => item.status !== "done");
   const done = requests.filter((item) => item.status === "done");
   const section = (title: string, lines: string[]) =>
@@ -130,6 +176,17 @@ export function renderKnowledgeMarkdown(file: KnowledgeFile) {
     "",
     section("Rules", rules.map((item) => `- ${item.text} ${by(item)}`)),
     section("Taught phrases", phrases.map((item) => `- "${item.phrase}" means "${item.text}" ${by(item)}`)),
+    section(
+      "Learned medication lines",
+      lines.map(
+        (item) =>
+          `- "${item.example ?? item.phrase}" reads as ${item.text ? `"${item.text}"` : "not a medication"}${item.confirmed === false ? " (Gemini guess, not checked yet)" : ""} ${by(item)}`,
+      ),
+    ),
+    section(
+      "Over-the-counter markings",
+      otc.map((item) => `- ${item.phrase}: ${item.text === "not otc" ? "prescription (Part D)" : "OTC, usually not Part D"} ${by(item)}`),
+    ),
     section("Open requests", open.map(request)),
     section("Done requests", done.map(request)),
   ].join("\n");

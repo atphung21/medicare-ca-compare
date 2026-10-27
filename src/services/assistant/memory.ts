@@ -1,4 +1,13 @@
-import { active, aliasMap, findItem, newItem, type KnowledgeItem } from "@/services/assistant/knowledge";
+import {
+  active,
+  aliasMap,
+  findItem,
+  lineFixMap,
+  newItem,
+  otcMap,
+  type KnowledgeItem,
+  type LineFix,
+} from "@/services/assistant/knowledge";
 import { knowledgeAuthor, readLocalKnowledge, updateKnowledge } from "@/services/assistant/knowledge-sync";
 
 export interface AssistantMemory {
@@ -6,17 +15,87 @@ export interface AssistantMemory {
   rules: string[];
   /** Lowercase phrase as typed on a medication list, mapped to the text the parser should read instead. */
   aliases: Record<string, string>;
+  /** Learned readings of whole medication lines, by medicationLineKey. */
+  lineFixes: Record<string, LineFix>;
+  /** Lowercase drug name: true if over the counter, false if marked as a prescription. */
+  otc: Record<string, boolean>;
 }
+
+export const GEMINI_AUTHOR = "auto (Gemini)";
 
 /** Reads the local copy only. Callers that want other computers' lessons call pullKnowledge first. */
 export async function readMemory(): Promise<AssistantMemory> {
   const file = await readLocalKnowledge();
-  return { rules: active(file, "rule").map((item) => item.text), aliases: aliasMap(file) };
+  return {
+    rules: active(file, "rule").map((item) => item.text),
+    aliases: aliasMap(file),
+    lineFixes: lineFixMap(file),
+    otc: otcMap(file),
+  };
 }
 
 export async function listKnowledge() {
   const file = await readLocalKnowledge();
-  return { rules: active(file, "rule"), phrases: active(file, "phrase"), requests: active(file, "request") };
+  return {
+    rules: active(file, "rule"),
+    phrases: active(file, "phrase"),
+    requests: active(file, "request"),
+    lines: active(file, "line"),
+    otc: active(file, "otc"),
+  };
+}
+
+/**
+ * Saves how a medication line should be read: one drug per ";", or "" for a line that isn't a medication.
+ * A person's fix replaces a Gemini guess; a Gemini guess never replaces a person's fix.
+ */
+export async function saveLineFix(
+  key: string,
+  rawLine: string,
+  reading: string,
+  options: { auto?: boolean } = {},
+) {
+  const phrase = key.trim();
+  const text = reading.trim();
+  const author = options.auto ? GEMINI_AUTHOR : knowledgeAuthor();
+  return updateKnowledge(`learn line "${rawLine.trim().slice(0, 60)}"`, (file) => {
+    const existing = active(file, "line").filter((item) => item.phrase === phrase);
+    const byPerson = existing.find((item) => item.confirmed !== false);
+    if (options.auto && byPerson) return byPerson;
+    const [first, ...rest] = existing;
+    rest.forEach((item) => touch(item, { deleted: true }));
+    const fields = { text, author, example: rawLine.trim(), confirmed: !options.auto };
+    if (first) {
+      touch(first, fields);
+      return first;
+    }
+    const item = newItem("line", author, { phrase, ...fields });
+    file.items.push(item);
+    return item;
+  });
+}
+
+/** Marks Gemini line fixes as checked, after the user compared plans with them. */
+export async function confirmLineFixes(ids: string[]) {
+  const wanted = new Set(ids);
+  return updateKnowledge(`confirm ${ids.length} learned line${ids.length === 1 ? "" : "s"}`, (file) => {
+    const items = active(file, "line").filter((item) => wanted.has(item.id) && item.confirmed === false);
+    items.forEach((item) => touch(item, { confirmed: true }));
+    return items.length;
+  });
+}
+
+/** Marks a drug name as over the counter (usually not Part D) or as a prescription drug. */
+export async function setOtc(name: string, otc: boolean) {
+  const phrase = name.trim().toLowerCase();
+  const text = otc ? "otc" : "not otc";
+  return updateKnowledge(`mark "${phrase}" ${text}`, (file) => {
+    const [first, ...rest] = active(file, "otc").filter((item) => item.phrase === phrase);
+    rest.forEach((item) => touch(item, { deleted: true }));
+    if (first) touch(first, { text, author: knowledgeAuthor() });
+    else if (phrase) file.items.push(newItem("otc", knowledgeAuthor(), { phrase, text }));
+    return otcMap(file);
+  });
 }
 
 function touch(item: KnowledgeItem, patch: Partial<KnowledgeItem>) {

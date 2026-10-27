@@ -18,12 +18,12 @@ const HELP = `npm run knowledge -- <command>
 
   status                         Where the memory is shared and whether this computer is in sync
   pull                           Bring in what other computers taught
-  list                           Show rules, phrases and requests with their ids
+  list                           Show rules, phrases, learned lines, OTC marks and requests with their ids
   add-rule "<text>"              Add a rule every assistant follows
   add-phrase "<phrase>" "<meaning>"  Teach the medication reader a phrase
   request "<text>" ["<example>"] Log a request
   done <id>                      Mark a request done
-  remove <id>                    Delete any rule, phrase or request
+  remove <id>                    Delete any rule, phrase, learned line, OTC mark or request
   push                           Share changes saved while offline`;
 
 const [command = "help", ...args] = process.argv.slice(2);
@@ -37,6 +37,11 @@ function report(shared) {
 function line(item) {
   const by = `(${item.author}, ${item.updatedAt.slice(0, 10)})`;
   if (item.kind === "phrase") return `  ${shortId(item.id)}  "${item.phrase}" means "${item.text}" ${by}`;
+  if (item.kind === "line") {
+    const reading = item.text ? `"${item.text}"` : "not a medication";
+    return `  ${shortId(item.id)}  "${item.example ?? item.phrase}" reads as ${reading}${item.confirmed === false ? " (Gemini guess, unchecked)" : ""} ${by}`;
+  }
+  if (item.kind === "otc") return `  ${shortId(item.id)}  ${item.phrase}: ${item.text} ${by}`;
   if (item.kind === "request") {
     return `  ${shortId(item.id)}  [${item.status === "done" ? "x" : " "}] ${item.text} ${by}${item.example ? `\n            Example: ${item.example}` : ""}`;
   }
@@ -54,7 +59,7 @@ switch (command) {
   case "status": {
     const status = await syncStatus();
     console.log(status.configured ? `Shared through ${status.repo}` : "Not shared: set KNOWLEDGE_REPO and KNOWLEDGE_TOKEN in .env.local.");
-    console.log(`${status.counts.rules} rules, ${status.counts.phrases} phrases, ${status.counts.openRequests} open requests`);
+    console.log(`${status.counts.rules} rules, ${status.counts.phrases} phrases, ${status.counts.learnedLines} learned medication fixes, ${status.counts.openRequests} open requests`);
     console.log(`Last pulled: ${status.lastPulledAt ?? "never"} · Last pushed: ${status.lastPushedAt ?? "never"}`);
     if (status.pendingPush) console.log("Changes are waiting to be shared.");
     if (status.lastError) console.log(`Last problem: ${status.lastError}`);
@@ -74,7 +79,7 @@ switch (command) {
   case "list": {
     await pullKnowledge({ force: true });
     const file = await readLocalKnowledge();
-    for (const [title, kind] of [["Rules", "rule"], ["Taught phrases", "phrase"], ["Requests", "request"]]) {
+    for (const [title, kind] of [["Rules", "rule"], ["Taught phrases", "phrase"], ["Learned medication lines", "line"], ["OTC markings", "otc"], ["Requests", "request"]]) {
       const items = active(file, kind).sort((left, right) => (left.status === "done") - (right.status === "done"));
       console.log(`${title}:`);
       console.log(items.length > 0 ? items.map(line).join("\n") : "  none");
@@ -107,7 +112,7 @@ switch (command) {
       console.error(`Nothing ${command === "done" ? "requested " : ""}has id ${args[0]}. Run \`npm run knowledge -- list\` for ids.`);
       process.exit(1);
     }
-    console.log(`${command === "done" ? "Marked done" : "Removed"}: ${value.text}`);
+    console.log(`${command === "done" ? "Marked done" : "Removed"}: ${value.example ?? value.phrase ?? value.text}`);
     report(shared);
     break;
   }

@@ -192,6 +192,44 @@ await check("The first version's memory.json and requests.md are migrated", asyn
   expect(remoteItems().some((item) => item.text === "Old rule"), "migrated rule not on GitHub");
 });
 
+await check("A line fixed on Eric's comparison page is read the same way on Andy's", async () => {
+  computer("Eric");
+  const key = "empagliflozin jardiance | 10 mg";
+  const { shared } = await memory.saveLineFix(key, "Empagliflozin (Jardiance) 10mg Tablet", "empagliflozin 10 mg tablet");
+  expect(shared, "push failed");
+  computer("Andy");
+  await sync.pullKnowledge({ force: true });
+  const fix = (await memory.readMemory()).lineFixes[key];
+  expect(fix?.text === "empagliflozin 10 mg tablet" && fix.author === "Eric" && fix.confirmed, `fix was ${JSON.stringify(fix)}`);
+  expect(fake.remoteFile("KNOWLEDGE.md")?.includes("Learned medication lines"), "KNOWLEDGE.md has no learned lines");
+});
+
+await check("A Gemini guess never replaces a person's fix, and is confirmed later", async () => {
+  computer("Andy");
+  const key = "empagliflozin jardiance | 10 mg";
+  await memory.saveLineFix(key, "Empagliflozin (Jardiance) 10mg Tablet", "jardiance 10 mg", { auto: true });
+  expect((await memory.readMemory()).lineFixes[key].text === "empagliflozin 10 mg tablet", "Gemini overwrote Eric's fix");
+  const other = "ferrous ferrets | 325 mg";
+  const { value } = await memory.saveLineFix(other, "Ferrous (Ferrets) 325", "ferrous fumarate 325 mg tablet", { auto: true });
+  expect(value.author === "auto (Gemini)" && value.confirmed === false, "Gemini fix should start unconfirmed");
+  expect((await memory.confirmLineFixes([value.id])).value === 1, "confirm did not change the fix");
+  computer("Eric");
+  await sync.pullKnowledge({ force: true });
+  expect((await memory.readMemory()).lineFixes[other]?.confirmed, "confirmation not shared");
+});
+
+await check("OTC markings sync, and the newest marking wins", async () => {
+  computer("Eric");
+  await memory.setOtc("Thiamine", true);
+  computer("Andy");
+  await sync.pullKnowledge({ force: true });
+  expect((await memory.readMemory()).otc.thiamine === true, "OTC mark not pulled");
+  await memory.setOtc("thiamine", false);
+  computer("Eric");
+  await sync.pullKnowledge({ force: true });
+  expect((await memory.readMemory()).otc.thiamine === false, "newer marking lost");
+});
+
 await check("A rejected token is reported instead of crashing", async () => {
   computer("Eric");
   process.env.KNOWLEDGE_TOKEN = "bad";

@@ -10,6 +10,7 @@ import {
   formularyFormTip,
   splitPharmacyTip,
 } from "@/lib/insights";
+import { cardsFromDraft } from "@/lib/draft-cards";
 import type { ZipLocation } from "@/lib/us-location";
 import {
   PHARMACY_CATALOG,
@@ -24,6 +25,7 @@ import {
   type ResolvedVariant,
 } from "@/schemas/medicare";
 import type { SpellingSuggestion } from "@/services/drug-spellcheck";
+import type { MedicationDraft } from "@/services/med-list-parser";
 import { partDCap } from "@/services/lis";
 import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
@@ -160,9 +162,17 @@ type ProofResult = {
   skipped: string[];
 };
 
+/** A drug card written back as text the medication reader understands, such as "Furosemide 40 mg Oral Tablet". */
+function readingFor(drug: DrugInput) {
+  return [drug.name, drug.strength, drug.isSupply ? "" : drug.dosageFormLabel]
+    .map((part) => (part ?? "").replace(/[;()]/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 function skippedNote(names: string[]) {
   if (names.length === 0) return "";
-  return `${names.join(", ")} ${names.length === 1 ? "isn't" : "aren't"} on Medicare.gov's drug list, so the proof leaves ${names.length === 1 ? "it" : "them"} out. Test strips and other diabetic supplies are usually covered under Part B.`;
+  return `${names.join(", ")} ${names.length === 1 ? "isn't" : "aren't"} on Medicare.gov's drug list, so the proof leaves ${names.length === 1 ? "it" : "them"} out. Test strips and other diabetic supplies are usually covered under Part B; vitamins and other over-the-counter items usually aren't covered by Part D.`;
 }
 
 function proofShots(data: {
@@ -237,6 +247,17 @@ export function CompareWorkspace() {
   const [drugNotes, setDrugNotes] = useState<Record<string, DrugReviewNote>>(
     {},
   );
+  const [fixing, setFixing] = useState<{ id: string; reading: string } | null>(
+    null,
+  );
+  const [learning, setLearning] = useState(false);
+  const [learnMessage, setLearnMessage] = useState("");
+  const [duplicate, setDuplicate] = useState<{
+    rawLine: string;
+    removed: string;
+    kept: string[];
+    reading: string;
+  } | null>(null);
 
   const counties = location?.zipCode === zipCode ? location.counties : [];
   const countyChoices = counties;
@@ -271,7 +292,7 @@ export function CompareWorkspace() {
   const filtered = useMemo(() => {
     const premiumCap = maxPremium === "" ? null : Number(maxPremium);
     const supplyIds = new Set(
-      quotedMeds.filter((drug) => drug.isSupply).map((drug) => drug.id),
+      quotedMeds.filter((drug) => drug.isSupply || drug.isOtc).map((drug) => drug.id),
     );
     const rows = plans.filter((plan) => {
       if (planType !== "ALL" && plan.planType !== planType) return false;
@@ -467,6 +488,13 @@ export function CompareWorkspace() {
     setDrugNotes(notes);
     setFormOptions(forms);
     setError("");
+    setFixing(null);
+    setDuplicate(null);
+    setLearnMessage("");
+    resolveUnlocked(items);
+  }
+
+  function resolveUnlocked(items: CheckedMedication[]) {
     for (const item of items) {
       const drug = item.drug;
       if (
@@ -481,12 +509,124 @@ export function CompareWorkspace() {
   }
 
   function removeDrug(id: string) {
+    const removed = medications.find((item) => item.id === id);
+    const rawLine = drugNotes[id]?.rawLine;
+    const siblings = rawLine
+      ? medications.filter(
+          (item) => item.id !== id && drugNotes[item.id]?.rawLine === rawLine,
+        )
+      : [];
     setMedications((current) => current.filter((item) => item.id !== id));
     setDrugNotes((current) => {
       const next = { ...current };
       delete next[id];
       return next;
     });
+    setDuplicate(
+      removed && rawLine && siblings.length > 0
+        ? {
+            rawLine,
+            removed: removed.name,
+            kept: siblings.map((item) => item.name),
+            reading: siblings.map(readingFor).join("; "),
+          }
+        : null,
+    );
+  }
+
+  async function saveLearning(body: Record<string, unknown>) {
+    const response = await fetch("/api/medicare/learn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      message?: string;
+      drafts?: MedicationDraft[];
+    };
+    if (!response.ok || !data.ok)
+      throw new Error(data.error || "The correction could not be saved.");
+    return data;
+  }
+
+  /** Saves how a typed line should be read, then shows the line's medications read the new way. */
+  async function teachLine(rawLine: string, reading: string) {
+    setLearning(true);
+    setLearnMessage("");
+    try {
+      const data = await saveLearning({ kind: "line", rawLine, reading });
+      const items = (data.drafts ?? []).flatMap(cardsFromDraft);
+      replaceLine(rawLine, items);
+      setFixing(null);
+      setLearnMessage(
+        `${reading ? "Learned how to read" : "Learned that this isn't a medication:"} "${rawLine}". ${data.message ?? ""}`,
+      );
+    } catch (caught) {
+      setLearnMessage(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLearning(false);
+    }
+  }
+
+  function replaceLine(rawLine: string, items: CheckedMedication[]) {
+    const onLine = (drug: DrugInput) => drugNotes[drug.id]?.rawLine === rawLine;
+    const at = Math.max(0, medications.findIndex(onLine));
+    const kept = medications.filter((drug) => !onLine(drug));
+    const removedIds = medications.filter(onLine).map((drug) => drug.id);
+    setMedications([
+      ...kept.slice(0, at),
+      ...items.map((item) => item.drug),
+      ...kept.slice(at),
+    ]);
+    setDrugNotes((current) => {
+      const next = { ...current };
+      removedIds.forEach((id) => delete next[id]);
+      items.forEach((item) => (next[item.drug.id] = item.note));
+      return next;
+    });
+    setFormOptions((current) => {
+      const next = { ...current };
+      removedIds.forEach((id) => delete next[id]);
+      items.forEach((item) => {
+        if (item.forms.length > 0) next[item.drug.id] = item.forms;
+      });
+      return next;
+    });
+    resolveUnlocked(items);
+  }
+
+  async function learnDuplicate() {
+    if (!duplicate) return;
+    setLearning(true);
+    try {
+      const data = await saveLearning({
+        kind: "line",
+        rawLine: duplicate.rawLine,
+        reading: duplicate.reading,
+      });
+      setLearnMessage(
+        `Learned: "${duplicate.rawLine}" is ${duplicate.kept.join(" and ")} only. ${data.message ?? ""}`,
+      );
+      setDuplicate(null);
+    } catch (caught) {
+      setLearnMessage(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLearning(false);
+    }
+  }
+
+  async function markOtc(drug: DrugInput, otc: boolean) {
+    updateDrug(drug.id, { isOtc: otc });
+    try {
+      const data = await saveLearning({ kind: "otc", name: drug.name, otc });
+      setLearnMessage(
+        `${drug.name} is now marked ${otc ? "over the counter (usually not Part D)" : "a prescription drug"}. ${data.message ?? ""}`,
+      );
+    } catch (caught) {
+      setLearnMessage(caught instanceof Error ? caught.message : String(caught));
+    }
   }
 
   function pickStrength(drug: DrugInput, label: string) {
@@ -623,7 +763,7 @@ export function CompareWorkspace() {
       return;
     }
     const missingStrength = medications.find(
-      (drug) => !drug.isSupply && !drug.strength.trim(),
+      (drug) => !drug.isSupply && !drug.isOtc && !drug.strength.trim(),
     );
     if (missingStrength) {
       setError(`Pick a strength for ${missingStrength.name}.`);
@@ -631,7 +771,8 @@ export function CompareWorkspace() {
     }
     const unresolved = medications.find(
       (drug) =>
-        drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus,
+        !drug.isOtc &&
+        (drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus),
     );
     if (unresolved) {
       setError(`Pick a form for ${unresolved.name} before comparing.`);
@@ -652,6 +793,17 @@ export function CompareWorkspace() {
     if (selectedPharmacies.length === 0) {
       setError("Select at least one pharmacy.");
       return;
+    }
+    const unchecked = [
+      ...new Set(
+        medications
+          .map((drug) => drugNotes[drug.id]?.learnedFix)
+          .filter((fix) => fix && !fix.confirmed)
+          .map((fix) => fix!.id),
+      ),
+    ];
+    if (unchecked.length > 0) {
+      void saveLearning({ kind: "confirm", ids: unchecked }).catch(() => undefined);
     }
     const payload: CompareRequest = {
       zipCode,
@@ -1239,12 +1391,43 @@ export function CompareWorkspace() {
                     setDrugNotes({});
                     setFormOptions({});
                     setError("");
+                    setFixing(null);
+                    setDuplicate(null);
                   }}
                 >
                   Remove all
                 </button>
               ) : null}
             </div>
+            {duplicate ? (
+              <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+                <p>
+                  Removed {duplicate.removed}. Was it the same drug as{" "}
+                  {duplicate.kept.join(" and ")}, written twice on “
+                  {duplicate.rawLine}”?
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={learning}
+                    onClick={() => void learnDuplicate()}
+                    className="rounded-lg bg-[var(--accent)] px-2 py-1 font-semibold text-white disabled:opacity-60"
+                  >
+                    Yes, read this line as one drug next time
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicate(null)}
+                    className="rounded-lg border border-[var(--line)] bg-white px-2 py-1"
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {learnMessage ? (
+              <p className="text-xs text-stone-600">{learnMessage}</p>
+            ) : null}
             {medications.length === 0 ? (
               <p className="text-sm text-stone-600">
                 Checked medications appear here.
@@ -1277,16 +1460,108 @@ export function CompareWorkspace() {
                         <p className="text-xs font-medium text-stone-500">
                           Drug {index + 1}
                         </p>
-                        <button
-                          type="button"
-                          className="text-xs text-stone-600 underline"
-                          onClick={() => removeDrug(drug.id)}
-                        >
-                          Remove
-                        </button>
+                        <div className="flex gap-3">
+                          {note?.rawLine ? (
+                            <button
+                              type="button"
+                              className="text-xs text-[var(--accent)] underline"
+                              onClick={() =>
+                                setFixing(
+                                  fixing?.id === drug.id
+                                    ? null
+                                    : { id: drug.id, reading: readingFor(drug) },
+                                )
+                              }
+                            >
+                              Fix this read
+                            </button>
+                          ) : null}
+                          {!drug.isSupply && drug.name.trim() ? (
+                            <button
+                              type="button"
+                              className="text-xs text-stone-600 underline"
+                              onClick={() => void markOtc(drug, !drug.isOtc)}
+                            >
+                              {drug.isOtc ? "Not OTC" : "Mark OTC"}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="text-xs text-stone-600 underline"
+                            onClick={() => removeDrug(drug.id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
+                      {fixing?.id === drug.id && note?.rawLine ? (
+                        <div className="space-y-2 rounded-lg border border-[var(--line)] bg-stone-50 p-2">
+                          <p className="text-xs text-stone-600">
+                            Typed: “{note.rawLine}”. Write how this line should
+                            be read (name, strength, form). Put ; between drugs
+                            if it really lists more than one. Everyone on the
+                            team gets the fix.
+                          </p>
+                          <input
+                            aria-label={`How to read drug ${index + 1}`}
+                            value={fixing.reading}
+                            onChange={(event) =>
+                              setFixing({ id: drug.id, reading: event.target.value })
+                            }
+                            className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={learning || fixing.reading.trim().length < 2}
+                              onClick={() =>
+                                void teachLine(note.rawLine, fixing.reading.trim())
+                              }
+                              className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                            >
+                              {learning ? "Saving…" : "Save and read again"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={learning}
+                              onClick={() => void teachLine(note.rawLine, "")}
+                              className="rounded-lg border border-[var(--line)] bg-white px-2 py-1 text-xs"
+                            >
+                              Not a medication
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setFixing(null)}
+                              className="px-2 py-1 text-xs text-stone-600 underline"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                       {note && drug.name.trim() ? (
-                        <h3 className="text-sm font-semibold">{drug.name}</h3>
+                        <div className="space-y-1">
+                          <h3 className="text-sm font-semibold">{drug.name}</h3>
+                          {note.alsoKnownAs ? (
+                            <p className="text-xs text-stone-600">
+                              Also written as {note.alsoKnownAs}
+                            </p>
+                          ) : null}
+                          {drug.isOtc ? (
+                            <p className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900">
+                              OTC, likely not covered by Part D
+                            </p>
+                          ) : null}
+                          {note.learnedFix ? (
+                            <p className="text-xs text-stone-600">
+                              {!note.learnedFix.confirmed
+                                ? "Gemini fixed how this line was read. Check it; comparing confirms the fix for the team."
+                                : note.learnedFix.author.includes("Gemini")
+                                  ? "Read with a Gemini fix the team confirmed."
+                                  : `Read with a fix taught by ${note.learnedFix.author}.`}
+                            </p>
+                          ) : null}
+                        </div>
                       ) : (
                         <input
                           aria-label={`Drug ${index + 1} name`}
@@ -1741,7 +2016,7 @@ function AuditBanner({
           <li key={drug.id}>
             Typed {drug.name} {drug.strength}{" "}
             {drug.dosageFormLabel || drug.dosageForm}
-            {drug.isSupply
+            {drug.isSupply || (drug.isOtc && !drug.resolvedName)
               ? " · searched on Medicare.gov by name"
               : drug.resolvedName
                 ? ` · Resolved as ${drug.resolvedName}`
@@ -1757,6 +2032,7 @@ function AuditBanner({
             {drug.compareBothForms && drug.alternate
               ? ` · also quoting ${drug.alternate.fullName}`
               : ""}
+            {drug.isOtc ? " · OTC, usually not covered by Part D" : ""}
           </li>
         ))}
       </ul>

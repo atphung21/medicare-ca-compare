@@ -52,8 +52,10 @@ export const DrugInputSchema = z.object({
   alternate: ResolvedVariantSchema.optional(),
   /** Diabetic supplies such as test strips have no strength and are searched on Medicare.gov by name. */
   isSupply: z.boolean().optional(),
+  /** Vitamins, supplements and laxatives: searched on Medicare.gov by name, skipped with a note if not listed. */
+  isOtc: z.boolean().optional(),
 }).superRefine((drug, context) => {
-  if (!drug.isSupply && drug.strength.length === 0) {
+  if (!drug.isSupply && !drug.isOtc && drug.strength.length === 0) {
     context.addIssue({ code: "custom", path: ["strength"], message: "Strength is required, for example 20mg" });
   }
 });

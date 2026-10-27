@@ -1,15 +1,18 @@
-import { geminiGenerateUrl } from "@/lib/gemini";
+import { geminiJson as askGemini } from "@/lib/gemini";
 import { hasStrengthUnit, matchStrengthLabel, strengthKey } from "@/lib/strength";
 import { coarseDosageForm, type DosageForm, type ResolvedVariant } from "@/schemas/medicare";
 import { pullKnowledge } from "@/services/assistant/knowledge-sync";
-import { applyAliases, readMemory } from "@/services/assistant/memory";
+import { applyAliases, readMemory, saveLineFix, type AssistantMemory } from "@/services/assistant/memory";
 import { catalogDrug, correctDrugToken, similarity, type SpellingSuggestion } from "@/services/drug-spellcheck";
 import {
+  isOtcName,
+  medicationLineKey,
   monthlyQuantityFor,
   normalizeMedicationLine,
   type FormHints,
   type NormalizedMedication,
 } from "@/services/med-line-normalizer";
+import { repairLineWithGemini } from "@/services/med-line-repair";
 import { listRxNormVariants } from "@/services/rxnorm-resolver";
 
 export type DraftStatus = "READY" | "MISSING_STRENGTH" | "MULTIPLE_FORMS";
@@ -42,6 +45,12 @@ export interface MedicationDraft {
   dailyFrequency: number;
   monthlyQuantity: number;
   isSupply: boolean;
+  /** Vitamin, supplement or laxative; usually not covered by Part D. */
+  isOtc: boolean;
+  /** Another name written on the line, usually the brand in parentheses. */
+  alsoKnownAs?: string;
+  /** Set when the line was read using a fix from team memory instead of the parser's own reading. */
+  learnedFix?: { id: string; author: string; confirmed: boolean };
   status: DraftStatus;
   strengths: StagingOption[];
   forms: StagingOption[];
@@ -89,13 +98,98 @@ const FALLBACK_CATALOG: Record<string, { name: string; strengths: string[]; form
 
 const HEADER = /^(?:current\s+)?(?:medications?|meds|med list|rx|drug list|prescriptions?)\s*:?\s*/i;
 
+const NO_MEMORY: AssistantMemory = { rules: [], aliases: {}, lineFixes: {}, otc: {} };
+
 export async function parseMedicationList(text: string): Promise<MedicationDraft[]> {
   const skipTaught = process.env.SKIP_TAUGHT_PHRASES === "1";
   if (!skipTaught) await pullKnowledge();
-  const taught = skipTaught ? {} : (await readMemory()).aliases;
-  const lines = (await medicationLines(text)).map((line) => applyAliases(line, taught));
-  const perLine = await mapLimit(lines, 4, draftsForLine);
+  const memory = skipTaught ? NO_MEMORY : await readMemory();
+  const lines = await medicationLines(text);
+  const perLine = await mapLimit(lines, 4, (line) => draftsForTypedLine(line, memory, !skipTaught));
   return perLine.flat().map((draft, index) => ({ ...draft, id: `draft-${index}-${draft.id}` }));
+}
+
+/** Reads one typed line again, such as right after someone taught how it should be read. */
+export async function parseTypedLine(line: string): Promise<MedicationDraft[]> {
+  const drafts = await draftsForTypedLine(line, await readMemory(), false);
+  return drafts.map((draft, index) => ({ ...draft, id: `draft-${index}-${draft.id}` }));
+}
+
+/** Parses one line as typed, using what the team taught: a learned reading of the line, phrases, OTC marks. */
+async function draftsForTypedLine(original: string, memory: AssistantMemory, learn: boolean) {
+  const fix = memory.lineFixes[medicationLineKey(original)];
+  let drafts: MedicationDraft[];
+  if (fix) {
+    const learnedFix = { id: fix.id, author: fix.author, confirmed: fix.confirmed };
+    drafts = fix.text ? await draftsForReading(fix.text, original, memory.aliases) : [];
+    drafts = drafts.map((draft) => ({ ...draft, learnedFix }));
+  } else {
+    drafts = await draftsForLine(normalizeMedicationLine(applyAliases(original, memory.aliases)));
+    if (learn && isUnsure(drafts)) drafts = (await repairLine(original, memory)) ?? drafts;
+  }
+  return drafts.map((draft) => {
+    const marked = memory.otc[draft.drugName.toLowerCase()];
+    return { ...draft, rawLine: original, isOtc: marked ?? draft.isOtc };
+  });
+}
+
+/**
+ * Parses a learned reading such as "docusate 50 mg / sennosides 8.6 mg tablet; thiamine 100 mg".
+ * Directions come from the original line unless the reading has its own.
+ */
+async function draftsForReading(reading: string, original: string, aliases: Record<string, string> = {}) {
+  const base = normalizeMedicationLine(applyAliases(original, aliases));
+  const perDrug = await Promise.all(
+    reading
+      .split(";")
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 1)
+      .map((segment) => {
+        const norm = normalizeMedicationLine(applyAliases(segment, aliases));
+        const merged: NormalizedMedication = norm.hasDirections
+          ? norm
+          : {
+              ...norm,
+              dailyFrequency: base.dailyFrequency,
+              unitsPerDose: base.unitsPerDose,
+              sites: base.sites,
+              mlPerDose: base.mlPerDose,
+              insulinUnitsPerDose: base.insulinUnitsPerDose,
+            };
+        merged.monthlyQuantity = monthlyQuantityFor(merged, "").quantity;
+        return draftsForLine(merged);
+      }),
+  );
+  return perDrug.flat();
+}
+
+/** Several drugs from one line, or a name the parser had to guess, is worth a second look. */
+function isUnsure(drafts: MedicationDraft[]) {
+  if (drafts.length > 1) return true;
+  return drafts.some((draft) => !draft.isSupply && !draft.isOtc && (draft.confidenceScore < 70 || !hasVariants(draft)));
+}
+
+function hasVariants(draft: MedicationDraft) {
+  return draft.strengths.some((option) => option.variants.length > 0) || draft.forms.some((option) => option.variants.length > 0);
+}
+
+/** Asks Gemini to read the line, keeps the answer only if every drug is found in RxNorm, and saves it for the team. */
+async function repairLine(original: string, memory: AssistantMemory) {
+  const reading = await repairLineWithGemini(original);
+  if (!reading) return null;
+  const drafts = await draftsForReading(reading, original, memory.aliases);
+  const trusted =
+    drafts.length > 0 &&
+    drafts.every((draft) => draft.isSupply || (hasVariants(draft) && draft.confidenceScore >= 70));
+  if (!trusted) return null;
+  try {
+    const { value } = await saveLineFix(medicationLineKey(original), original, reading, { auto: true });
+    const learnedFix = { id: value.id, author: value.author, confirmed: value.confirmed !== false };
+    if (value.text !== reading) return null;
+    return drafts.map((draft) => ({ ...draft, learnedFix }));
+  } catch {
+    return drafts;
+  }
 }
 
 async function medicationLines(text: string) {
@@ -121,7 +215,7 @@ function splitLines(text: string) {
 /** Splits "metformin 500, lisinopril 10" but keeps "metformin 500, take 2 tabs" together. */
 function splitSegments(line: string) {
   const segments: string[] = [];
-  for (const part of line.split(/;|,(?!\d{3}\b)/)) {
+  for (const part of splitOutsideParentheses(line)) {
     const piece = part.trim();
     if (!piece) continue;
     if (segments.length > 0 && normalizeMedicationLine(piece).tokens.length === 0) {
@@ -133,6 +227,25 @@ function splitSegments(line: string) {
   return segments;
 }
 
+/** Splits on ";" and on commas that aren't thousands separators, but not inside parentheses. */
+function splitOutsideParentheses(line: string) {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth = Math.max(0, depth - 1);
+    const separator = char === ";" || (char === "," && !/^\d{3}\b/.test(line.slice(index + 1)));
+    if (separator && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else current += char;
+  }
+  parts.push(current);
+  return parts;
+}
+
 async function splitParagraphWithGemini(text: string) {
   const parsed = await askGemini<{ lines?: string[] }>(
     `Split this medication note into one drug per line. Keep the strength and frequency words that are already written. Do not invent a strength or a drug. Return JSON {"lines":["..."]}.\n\n${text}`,
@@ -140,13 +253,25 @@ async function splitParagraphWithGemini(text: string) {
   return (parsed?.lines ?? []).map((line) => line.trim()).filter((line) => line.length > 1);
 }
 
-async function draftsForLine(line: string): Promise<MedicationDraft[]> {
-  const norm = normalizeMedicationLine(line);
+async function draftsForLine(norm: NormalizedMedication): Promise<MedicationDraft[]> {
   if (norm.hints.supply) return [supplyDraft(norm)];
-  if (norm.tokens.length === 0) return [];
+  if (norm.tokens.length === 0 && !norm.alsoKnownAs) return [];
 
   const whole = await resolveName(norm.name, norm.typedName);
   if (whole) return [buildDraft(norm, whole)];
+  if (norm.alsoKnownAs) {
+    const other = await resolveName(norm.alsoKnownAs, norm.alsoKnownAs);
+    if (other) return [buildDraft({ ...norm, alsoKnownAs: norm.typedName }, other)];
+  }
+  if (norm.otc && norm.groupNames.length > 1) {
+    // An OTC combination such as "calcium - vitamin d" is one product, searched by name on Medicare.gov.
+    return [
+      buildDraft(
+        { ...norm, strengths: norm.strengths.length > 1 ? [norm.strengths.join(" / ")] : norm.strengths },
+        { key: norm.groupNames.join(" / "), typed: norm.typedName, variants: [], corrected: false, confidence: 80, suggestions: [] },
+      ),
+    ];
+  }
 
   if (norm.tokens.length > 1) {
     const found = await separateDrugs(norm.tokens);
@@ -245,11 +370,10 @@ function buildDraft(norm: NormalizedMedication, resolution: NameResolution): Med
   );
   strengthGroups.sort((left, right) => strengthRank(left.label) - strengthRank(right.label));
   const typedStrength = norm.strengths[0];
+  const labels = strengthGroups.map((group) => group.label);
   let selectedStrength = typedStrength
-    ? matchStrengthLabel(
-        strengthGroups.map((group) => group.label),
-        typedStrength,
-      )
+    ? (matchStrengthLabel(labels, typedStrength) ??
+      norm.alternateStrengths.map((alternate) => matchStrengthLabel(labels, alternate)).find(Boolean))
     : undefined;
   if (!selectedStrength && typedStrength && variants.length === 0) {
     selectedStrength = displayStrength(hasStrengthUnit(typedStrength) ? typedStrength : `${typedStrength} mg`);
@@ -294,6 +418,8 @@ function buildDraft(norm: NormalizedMedication, resolution: NameResolution): Med
     dailyFrequency: norm.dailyFrequency,
     monthlyQuantity: monthlyQuantityFor(norm, quantityForm).quantity,
     isSupply: false,
+    isOtc: norm.otc || isOtcName(resolution.key, norm.hints.injection),
+    ...(norm.alsoKnownAs ? { alsoKnownAs: titleCase(norm.alsoKnownAs) } : {}),
     status: draftStatus(strengths, forms, explicitForm),
     strengths,
     forms,
@@ -349,6 +475,7 @@ function supplyDraft(norm: NormalizedMedication): MedicationDraft {
     dailyFrequency: norm.dailyFrequency,
     monthlyQuantity: norm.monthlyQuantity,
     isSupply: true,
+    isOtc: false,
     status: "READY",
     strengths: [],
     forms: [{ label: "Diabetic supply", selected: true, variants: [] }],
@@ -449,9 +576,13 @@ function fallbackVariants(drugKey: string): StagingVariant[] {
 function displayName(drugKey: string, variants: StagingVariant[]) {
   const known = FALLBACK_CATALOG[drugKey]?.name ?? catalogDrug(drugKey)?.canonicalName;
   if (known) return known;
-  const titled = drugKey.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  const titled = titleCase(drugKey);
   const combo = variants.length > 0 && variants.every((variant) => variant.fullName.includes(" / "));
   return combo && !titled.includes("/") ? titled.split(/\s+/).join(" / ") : titled;
+}
+
+function titleCase(value: string) {
+  return value.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
 function displayStrength(value: string) {
@@ -498,30 +629,6 @@ async function guessDrugNamesWithGemini(text: string) {
     `This text was typed into a Medicare drug list. It may be misspelled, abbreviated, or mixed with directions: "${text}". Return the drug names it most likely refers to, one name per drug mentioned (keep a brand name as the brand, do not also list its generic), as US names found in RxNorm, without strength or directions. Do not add drugs that are not mentioned. Return JSON {"drugs":["..."]}, or {"drugs":[]} if it is not a medication.`,
   );
   return (parsed?.drugs ?? []).map((name) => name.trim()).filter((name) => name.length > 2);
-}
-
-async function askGemini<T>(prompt: string): Promise<T | null> {
-  if (!process.env.GEMINI_API_KEY) return null;
-  try {
-    const response = await fetch(
-      geminiGenerateUrl(),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0, responseMimeType: "application/json" },
-        }),
-        signal: AbortSignal.timeout(20000),
-      },
-    );
-    if (!response.ok) return null;
-    const body = await response.json();
-    const raw = body?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>) {

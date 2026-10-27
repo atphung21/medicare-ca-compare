@@ -30,8 +30,16 @@ export interface NormalizedMedication {
   /** Drug words with abbreviations expanded, such as hctz to hydrochlorothiazide. */
   name: string;
   tokens: string[];
+  /** One name per ingredient group, such as ["calcium", "vitamin d"]. */
+  groupNames: string[];
   explicitCombo: boolean;
+  /** Another name written in parentheses, usually the brand: "Furosemide (Lasix)" gives "lasix". */
+  alsoKnownAs: string;
   strengths: string[];
+  /** Equivalent strengths in parentheses, such as "2000 units" in "50 mcg (2,000 U)". */
+  alternateStrengths: string[];
+  /** Vitamins, supplements and laxatives that Part D plans usually don't cover. */
+  otc: boolean;
   dailyFrequency: number;
   unitsPerDose: number;
   /** 2 for both eyes, both ears, or each nostril. */
@@ -46,6 +54,8 @@ export interface NormalizedMedication {
   hints: FormHints;
   /** Instruction and form words, kept so a split line can be parsed again per drug. */
   sigText: string;
+  /** Whether the line says how much or how often, rather than falling back to once a day. */
+  hasDirections: boolean;
 }
 
 const COUNT_WORDS: Record<string, number> = {
@@ -157,6 +167,7 @@ const STOP_WORDS = new Set(
   bottle bottles tube tubes box boxes pack packs package kit supply supplies
   sugar sugars glucose check checks test testing tests
   nostril nostrils nares spray sprays
+  minute minutes do not exceed max maximum needed release
   chest headache headaches angina heart swelling edema itch itching rash cough wheezing wheeze breath shortness
   constipation diarrhea allergy allergies infection insomnia depression mood thyroid gout arthritis migraine
   migraines seizure seizures vomiting fever inflammation glaucoma heartburn reflux muscle spasm spasms back joint`
@@ -205,8 +216,26 @@ const COMPOUND_NAMES = new Set([
   "calcium citrate",
   "sodium bicarbonate",
   "sodium chloride",
+  "sodium fluoride",
   "ferrous sulfate",
+  "ferrous fumarate",
+  "ferrous gluconate",
+  "zinc sulfate",
 ]);
+
+/** Over-the-counter items: still searched on Medicare.gov, but usually not on a Part D formulary. */
+const OTC =
+  /\b(?:vitamins?|multivitamins?|cholecalciferol|ergocalciferol|cyanocobalamin|thiamine|riboflavin|niacin|pyridoxine|biotin|ascorbic|calcium|ferrous|iron|magnesium oxide|zinc|docusate|senna|sennosides|bisacodyl|polyethylene glycol|psyllium|fish oil|omega|melatonin|glucosamine|probiotics?|coenzyme|lutein)\b/;
+/** Prescription-only products whose names match the OTC list. */
+const NOT_OTC = /\b(?:calcium acetate|calcitriol|omega 3 acid|icosapent|iron sucrose|iron dextran|ferumoxytol)\b/;
+
+/** Whether a drug name is usually bought over the counter. Injections are never OTC. */
+export function isOtcName(name: string, injection = false) {
+  const text = name.toLowerCase();
+  if (injection || NOT_OTC.test(text)) return false;
+  if (/\bcholecalciferol\b|\bergocalciferol\b/.test(text) && /\b(?:50000|1\.25 mg)\b/.test(text)) return false;
+  return OTC.test(text);
+}
 
 const ABBREVIATIONS: Record<string, string> = {
   hctz: "hydrochlorothiazide",
@@ -222,6 +251,10 @@ const ABBREVIATIONS: Record<string, string> = {
   mvi: "multivitamin",
   mvit: "multivitamin",
   fe: "ferrous sulfate",
+  ferrets: "ferrous fumarate",
+  senna: "sennosides",
+  senokot: "sennosides",
+  colace: "docusate",
   cyanocobalamine: "cyanocobalamin",
   tmp: "trimethoprim",
   smx: "sulfamethoxazole",
@@ -230,8 +263,9 @@ const ABBREVIATIONS: Record<string, string> = {
 };
 
 export function normalizeMedicationLine(line: string): NormalizedMedication {
-  let text = ` ${prepare(line)} `;
-  const sig: string[] = [];
+  const parts = splitParentheses(prepare(line));
+  let text = ` ${parts.main} `;
+  const sig: string[] = [...parts.notes];
   const remove = (pattern: RegExp) => {
     const match = text.match(pattern);
     if (!match) return null;
@@ -345,16 +379,26 @@ export function normalizeMedicationLine(line: string): NormalizedMedication {
     .replace(/[^a-z/\s]/g, " ")
     .split("/")
     .map((group) => cleanWords(group))
+    .map(dropRepeatedWords())
     .filter((group) => group.typed.length > 0);
 
   const typedName = groups.map((group) => group.typed.join(" ")).join(" ");
   const tokens = groups.flatMap((group) => group.expanded);
+  const name = tokens.join(" ");
+  const alsoKnownAs = parts.aliases
+    .map((alias) => cleanWords(alias.replace(/[^a-z\s]/g, " ")).expanded.join(" "))
+    .find((alias) => alias && alias !== name) ?? "";
+  const otc = !supply && isOtcName(`${name} ${strengths.join(" ")}`, hints.injection);
   const normalized: NormalizedMedication = {
     rawLine: line.trim(),
     typedName,
-    name: tokens.join(" "),
+    name,
     tokens,
+    groupNames: groups.map((group) => group.expanded.join(" ")),
     explicitCombo: groups.length >= 2,
+    alsoKnownAs,
+    alternateStrengths: parts.alternates,
+    otc,
     strengths: supply ? [] : strengths,
     dailyFrequency: dailyFrequency ?? 1,
     unitsPerDose,
@@ -366,11 +410,23 @@ export function normalizeMedicationLine(line: string): NormalizedMedication {
     quantityUnit: "each",
     hints,
     sigText: sig.join(" "),
+    hasDirections:
+      dailyFrequency !== null || unitsPerDose !== 1 || sites > 1 || mlPerDose > 0 || insulinUnitsPerDose > 0,
   };
   const { quantity, unit } = monthlyQuantityFor(normalized, hintedFormLabel(hints));
   normalized.monthlyQuantity = quantity;
   normalized.quantityUnit = unit;
   return normalized;
+}
+
+/**
+ * Identifies the drug part of a line (name, other name, strengths) so a learned fix still applies
+ * when the directions are written differently.
+ */
+export function medicationLineKey(line: string) {
+  const norm = normalizeMedicationLine(line);
+  const parts = [norm.typedName, norm.alsoKnownAs, norm.strengths.join(" + ")].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : line.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 const DROPS_PER_ML = 20;
@@ -434,7 +490,82 @@ function prepare(line: string) {
     .replace(/(^|[^\d.])\.(\d)/g, (_, before: string, digit: string) => `${before}0.${digit}`)
     .replace(/([a-z])(\d)/g, "$1 $2")
     .replace(/(\d)([a-z])/g, "$1 $2")
-    .replace(/[(),;:]/g, " ");
+    .replace(/[\[{]/g, "(")
+    .replace(/[\]}]/g, ")")
+    .replace(/[,;:]/g, " ");
+}
+
+const ALTERNATE_STRENGTH = /^\s*\d+(?:\.\d+)?\s*(?:u|units?|unt|iu|international units?)\s*$/;
+const LIMIT_NOTE = /\b(?:do not|don t|dont|not to exceed|exceed|max(?:imum)?|up to|no more than)\b/;
+
+/**
+ * Takes matched "( ... )" groups out of a line. A name-only group is another name for the same drug
+ * ("furosemide (lasix)"), not a second drug. Strength and form groups stay in the line; dosing limits
+ * and unit equivalents are dropped. Unmatched parentheses are ignored.
+ */
+function splitParentheses(text: string) {
+  const open: number[] = [];
+  const pairs: [number, number][] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "(") open.push(index);
+    else if (text[index] === ")" && open.length > 0) pairs.push([open.pop()!, index]);
+  }
+  const outer = pairs.filter(([start, end]) => !pairs.some(([s, e]) => s < start && e > end));
+  outer.sort((left, right) => left[0] - right[0]);
+
+  let main = "";
+  let cursor = 0;
+  const aliases: string[] = [];
+  const notes: string[] = [];
+  const alternates: string[] = [];
+  const kept: string[] = [];
+  for (const [start, end] of outer) {
+    main += ` ${text.slice(cursor, start)} `;
+    cursor = end + 1;
+    const content = text.slice(start + 1, end).replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+    if (!content) continue;
+    if (LIMIT_NOTE.test(content)) notes.push(content);
+    else if (ALTERNATE_STRENGTH.test(content)) alternates.push(content);
+    else if (!/\d/.test(content) && hasNameWords(content)) {
+      aliases.push(content);
+      kept.push(...HINTS.flatMap(([, pattern]) => content.match(pattern) ?? []));
+    } else kept.push(content);
+  }
+  main += ` ${text.slice(cursor)} `;
+  main = `${main} ${kept.join(" ")}`.replace(/[()]/g, " ");
+
+  const hasStrength = /\d\s*(?:mg|mcg|g|meq|units?|iu|%)(?![a-z])/.test(main);
+  const remaining = hasStrength ? [] : alternates;
+  if (remaining.length > 0) main += ` ${remaining.join(" ")}`;
+  return {
+    main,
+    aliases,
+    notes,
+    alternates: alternates.filter((value) => !remaining.includes(value)).map(normalizeAlternate),
+  };
+}
+
+function hasNameWords(content: string) {
+  let text = ` ${content} `;
+  for (const [, pattern] of HINTS) text = text.replace(pattern, " ");
+  return cleanWords(text.replace(/[^a-z\s]/g, " ")).typed.length > 0;
+}
+
+function normalizeAlternate(value: string) {
+  const amount = value.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
+  return `${Number(amount)} units`;
+}
+
+/** "cholecalciferol (cholecalciferol 50 mcg)" names the drug twice; keep each word once. */
+function dropRepeatedWords() {
+  const seen = new Set<string>();
+  return (group: { typed: string[]; expanded: string[] }) => {
+    const typed = group.typed.filter((word) => !seen.has(word));
+    const expanded = group.expanded.filter((word) => !seen.has(word));
+    group.typed.forEach((word) => seen.add(word));
+    group.expanded.forEach((word) => seen.add(word));
+    return { typed, expanded };
+  };
 }
 
 function cleanWords(group: string) {
@@ -451,6 +582,8 @@ function cleanWords(group: string) {
     if (STOP_WORDS.has(word) || SALT_WORDS.has(word)) continue;
     kept.push(word);
   }
+  // A salt word on its own is the drug, as in "calcium - vitamin d".
+  if (kept.length === 0) kept.push(...words.filter((word) => SALT_WORDS.has(word)));
   const expanded = kept.flatMap((word) => (ABBREVIATIONS[word] ?? word).split(" "));
   return { typed: kept, expanded };
 }

@@ -19,6 +19,10 @@ export type DrugReviewNote = {
   spellingSuggestions: SpellingSuggestion[];
   strengthChoices: string[];
   unlistedStrength?: string;
+  /** Another name on the line, usually the brand in parentheses. */
+  alsoKnownAs?: string;
+  /** The line was read with a fix from team memory. */
+  learnedFix?: MedicationDraft["learnedFix"];
 };
 
 export type CheckedMedication = {
@@ -85,6 +89,7 @@ function supplyCard(draft: MedicationDraft): CheckedMedication {
       confidenceScore: draft.confidenceScore,
       spellingSuggestions: [],
       strengthChoices: [],
+      ...(draft.learnedFix ? { learnedFix: draft.learnedFix } : {}),
     },
     forms: [],
   };
@@ -119,6 +124,7 @@ function cardFor(
       resolvedName: locked?.fullName,
       isBrand: locked?.isBrand,
       resolutionStatus: status,
+      ...(draft.isOtc ? { isOtc: true } : {}),
     },
     note: {
       rawLine: draft.rawLine,
@@ -129,6 +135,8 @@ function cardFor(
       strengthChoices,
       unlistedStrength:
         strengthChoices.length > 0 ? (draft.typedStrength ?? undefined) : undefined,
+      ...(draft.alsoKnownAs ? { alsoKnownAs: draft.alsoKnownAs } : {}),
+      ...(draft.learnedFix ? { learnedFix: draft.learnedFix } : {}),
     },
     forms: variants,
   };

@@ -323,14 +323,15 @@ function SessionPanel({ session, memory }: { session: AssistantSession; memory: 
 }
 
 function TeamMemory({ memory }: { memory: SyncStatus }) {
-  const { rules, phrases, openRequests } = memory.counts;
+  const { rules, phrases, openRequests, learnedLines = 0 } = memory.counts;
   const shared = memory.configured && !memory.pendingPush && !memory.lastError;
   const synced = memory.lastPushedAt && memory.lastPushedAt > (memory.lastPulledAt ?? "") ? memory.lastPushedAt : memory.lastPulledAt;
   return (
     <div>
       <p className="font-semibold">Team memory</p>
       <p className="text-stone-700">
-        {rules} rule{rules === 1 ? "" : "s"} · {phrases} phrase{phrases === 1 ? "" : "s"} · {openRequests} open request
+        {rules} rule{rules === 1 ? "" : "s"} · {phrases} phrase{phrases === 1 ? "" : "s"} · {learnedLines} learned
+        medication fix{learnedLines === 1 ? "" : "es"} · {openRequests} open request
         {openRequests === 1 ? "" : "s"}
       </p>
       <p className={`text-xs ${shared ? "text-stone-500" : "text-[var(--warn)]"}`}>

@@ -54,6 +54,32 @@ export async function geminiChat(
   throw lastError ?? new Error("Gemini gave no answer.");
 }
 
+/** One JSON answer to a prompt, or null when there is no key, the call fails, or it takes too long. */
+export async function geminiJson<T>(
+  prompt: string,
+  options: { model?: string; timeoutMs?: number } = {},
+): Promise<T | null> {
+  if (!process.env.GEMINI_API_KEY) return null;
+  try {
+    const response = await fetch(geminiGenerateUrl(options.model), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, responseMimeType: "application/json" },
+      }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 20000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    const raw =
+      body?.candidates?.[0]?.content?.parts?.map((part: GeminiPart) => part.text ?? "").join("") ?? "";
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
 async function chatOnce(
   model: string,
   contents: GeminiContent[],

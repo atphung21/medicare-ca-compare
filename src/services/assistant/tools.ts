@@ -58,6 +58,7 @@ function describe(item: CheckedMedication, index: number) {
 
 function readiness(drug: DrugInput) {
   if (drug.isSupply) return "ready (supply, searched on Medicare.gov by name)";
+  if (drug.isOtc && !drug.rxcui) return "ready (OTC, usually not Part D; searched on Medicare.gov by name)";
   if (!drug.strength.trim()) return "needs strength";
   if (!drug.rxcui) return drug.resolutionStatus === "NOT_FOUND" ? "not found in RxNorm" : "needs form";
   return "ready";
@@ -388,7 +389,7 @@ const tools: AssistantTool[] = [
         : [{ label: "Medicare.gov results", src: `/api/medicare/proof/${proof.proofId}/${proof.imageFile}` }];
       return {
         result: { captured: images.map((image) => image.label), medicare_gov_url: proof.medicareGovUrl, skipped_supplies: proof.skipped ?? [] },
-        summary: `Captured ${images.length} Medicare.gov screenshot${images.length === 1 ? "" : "s"}${proof.skipped?.length ? `; skipped ${proof.skipped.join(", ")} (not listed, likely Part B)` : ""}`,
+        summary: `Captured ${images.length} Medicare.gov screenshot${images.length === 1 ? "" : "s"}${proof.skipped?.length ? `; skipped ${proof.skipped.join(", ")} (not on Medicare.gov's list: supplies are usually Part B, OTC items usually aren't Part D)` : ""}`,
         images,
         link: proof.medicareGovUrl,
       };
@@ -409,16 +410,22 @@ const tools: AssistantTool[] = [
   {
     declaration: {
       name: "list_memory",
-      description: "Show saved rules and taught medication phrases, with who taught each one.",
+      description:
+        "Show saved rules, taught medication phrases, learned readings of whole medication lines (from corrections on the comparison page or Gemini repairs), and OTC markings, with who taught each one.",
     },
     async run() {
-      const { rules, phrases } = await listKnowledge();
+      const { rules, phrases, lines, otc } = await listKnowledge();
       return {
         result: {
           rules: rules.map((item, index) => `${index + 1}. ${item.text} (taught by ${item.author})`),
           taught_phrases: phrases.map((item) => `"${item.phrase}" means "${item.text}" (taught by ${item.author})`),
+          learned_lines: lines.map(
+            (item) =>
+              `"${item.example ?? item.phrase}" reads as ${item.text ? `"${item.text}"` : "not a medication"} (${item.author}${item.confirmed === false ? ", unchecked Gemini guess" : ""}, id ${item.id.slice(0, 8)})`,
+          ),
+          otc_markings: otc.map((item) => `${item.phrase}: ${item.text} (${item.author})`),
         },
-        summary: `${rules.length} rules, ${phrases.length} taught phrases`,
+        summary: `${rules.length} rules, ${phrases.length} taught phrases, ${lines.length} learned lines, ${otc.length} OTC markings`,
       };
     },
   },

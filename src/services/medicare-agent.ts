@@ -249,7 +249,7 @@ export async function captureMedicareProof(
     for (const medication of input.medications) {
       const result = await addMedication(page, medication, searchLog);
       if (result === "added") continue;
-      if (result === "not-listed" && medication.isSupply) {
+      if (result === "not-listed" && (medication.isSupply || medication.isOtc)) {
         skipped.push(medication.name);
         continue;
       }
@@ -269,7 +269,7 @@ export async function captureMedicareProof(
         dir,
         proofId,
         "drugs",
-        `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not on Medicare.gov's drug list. Supplies like test strips are usually covered under Part B.`,
+        `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not on Medicare.gov's drug list. Supplies like test strips are usually covered under Part B; vitamins and other over-the-counter items usually aren't covered by Part D.`,
       );
     }
     const lastDrug = input.medications

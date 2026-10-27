@@ -11,7 +11,9 @@ Who uses it: a licensed Medicare agent compares Part D / Medicare Advantage drug
 - Strengths: 1% = 10 mg/mL; "250 mg/5 mL" = 50 mg/mL. RxNorm labels look like `20 MG/ML`, multi-dose pens `0.25 MG, 0.5 MG Dose …`.
 - Monthly quantity (`monthlyQuantityFor`): tablets = per day x 30; drops round up to a 5/10/15 mL bottle (20 drops per mL, x2 for "both eyes"); insulin is 100 units/mL, pens 3 mL, vials 10 mL; inhalers, creams, nasal sprays and pens = 1 package; liquids = mL per day.
 - Diabetic supplies (strips, lancets, sensors, pen needles) are `isSupply`: no strength, searched on Medicare.gov by name, skipped with a Part B note if not listed. "FreeStyle" alone means FreeStyle Lite test strips.
-- Taught phrases from the assistant's team memory are applied before parsing. Promote ones that should be permanent into the normalizer and a fixture.
+- A name in parentheses is another name for the same drug (`alsoKnownAs`), tried only if the outer name fails; strengths and "ER" inside parentheses still count, unit equivalents like "(2,000 U)" become `alternateStrengths`, and "(do not exceed …)" is ignored.
+- Vitamins, supplements and laxatives are `isOtc` (`isOtcName`): kept on the list with an OTC badge, searched on Medicare.gov by name, skipped with a note if not listed, and left out of the sample coverage math.
+- Team memory teaches the parser three ways: taught phrases (word replacements), learned lines (`line`: a whole line's reading, keyed by `medicationLineKey`, saved from "Fix this read", the duplicate prompt, or a Gemini repair in `med-line-repair.ts` that RxNorm confirmed), and OTC marks (`otc`). Promote ones that should be permanent into the normalizer and a fixture.
 
 ## Medicare.gov proof (`src/services/medicare-agent.ts`)
 Playwright drives plan-compare: ZIP + county (Census name first, then `countyBaseName`), drug combobox search, `select[name="dosage"]`, `input[name="quantity"]` (mL for drops), nearest store per pharmacy chain, then screenshots in `data/proofs/<id>/`. Search attempts are logged to `drug-search.json` there; read it when a drug fails.
@@ -19,7 +21,7 @@ Playwright drives plan-compare: ZIP + county (Census name first, then `countyBas
 ## Assistant (`src/services/assistant/`)
 Gemini function calling (`src/lib/gemini.ts` `geminiChat`). Tools live in `tools.ts`; add a tool by appending `{ declaration, run }` that wraps an existing service and returns a compact `result`. The browser owns the session; the server is stateless.
 
-Team memory (rules, taught phrases, requests) is shared by every computer through a private GitHub repo (`KNOWLEDGE_REPO`, `KNOWLEDGE_TOKEN`, `KNOWLEDGE_AUTHOR` in `.env.local`). Model and merge rules: `knowledge.ts`. Local cache and GitHub sync: `knowledge-sync.ts`, cached in `data/agent/knowledge.json`. Change it only through `memory.ts` functions or `npm run knowledge -- <command>`, never by writing the cache directly.
+Team memory (rules, taught phrases, learned lines, OTC marks, requests) is shared by every computer through a private GitHub repo (`KNOWLEDGE_REPO`, `KNOWLEDGE_TOKEN`, `KNOWLEDGE_AUTHOR` in `.env.local`). Model and merge rules: `knowledge.ts`. Local cache and GitHub sync: `knowledge-sync.ts`, cached in `data/agent/knowledge.json`. Change it only through `memory.ts` functions or `npm run knowledge -- <command>`, never by writing the cache directly.
 
 ## Before finishing any change
 - `npx tsc --noEmit`, `npm run lint`, `npm run check:meds` (all cases must pass; add a case for every new medication format).

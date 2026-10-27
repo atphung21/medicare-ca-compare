@@ -12,6 +12,7 @@ const load = await transpileSources("check-meds", [
   "services/assistant/knowledge.ts",
   "services/assistant/knowledge-sync.ts",
   "services/assistant/memory.ts",
+  "services/med-line-repair.ts",
   "services/med-list-parser.ts",
 ]);
 
@@ -70,6 +71,25 @@ const CASES = [
   { line: "furosemide 40 mg 2 tabs every morning", name: "furosemide", strength: "40 mg", quantity: 60 },
   { line: "Tylenol 500 mg q6h prn", name: "tylenol", strength: "500 mg", form: /tablet/i, quantity: 120 },
   { line: "fentanyl 25 mcg/hr patch every 72 hours", name: "fentanyl", form: /transdermal|patch/i },
+  // A discharge list from an email: brand names in parentheses, repeated names, IU equivalents, OTC vitamins.
+  { line: "Cholecalciferol (Cholecalciferol 50mcg (2,000U) Capsule – 1 Capsule by Mouth Once a Day", name: "cholecalciferol", form: /capsule/i, quantity: 30, otc: true },
+  { line: "Empagliflozin (Jardiance) 10mg Tablet – 1 Tablet by Mouth Once a Day", name: "empagliflozin", strength: "10 mg", form: /tablet/i, quantity: 30, otc: false },
+  { line: "Potassium Chloride (Potassium Chloride 20 mEq Extended Release) – 1 Tablet by Mouth Once a Day", name: "potassium chloride", strength: "20 meq", form: /extended/i, quantity: 30, otc: false },
+  { line: "Sacubitril-Valsartan (Entresto) 24mg-26mg Tablet – 1 Tablet by Mouth Twice a Day", name: "sacubitril / valsartan", strength: "24 mg / 26 mg", form: /tablet/i, quantity: 60 },
+  { line: "Spironolactone 25mg Tablet - 1 Tablet by Mouth Once a Day", name: "spironolactone", strength: "25 mg", quantity: 30 },
+  { line: "Furosemide (Lasix) 40mg Tablet - 1 Tablet by Mouth Twice a Day", name: "furosemide", strength: "40 mg", quantity: 60 },
+  { line: "Levothyroxine 112mcg Tablet - 1 Tablet by Mouth Once a Day", name: "levothyroxine", strength: "0.112 mg", quantity: 30 },
+  { line: "Apixaban (Eliquis) 5mg Tablet - 1 Tablet by Mouth Twice a Day", name: "apixaban", strength: "5 mg", quantity: 60 },
+  { line: "Atorvastatin 40mg Tablet - 1 Tablet by Mouth Once a Day", name: "atorvastatin", strength: "40 mg", quantity: 30 },
+  { line: "Calcium 500mg - Vitamin D 5mcg (200 unit) Tablet - 1 Tablet by Mouth Once a Day", name: "calcium", quantity: 30, otc: true },
+  { line: "Digoxin 125mcg Tablet - 1 Tablet by Mouth Once Every Other Day", name: "digoxin", strength: "0.125 mg", quantity: 15 },
+  { line: "Ferrous Fumarate (Ferrets) 325mg Tablet - 1 Tablet by Mouth Once a Day", name: "ferrous fumarate", quantity: 30, otc: true },
+  { line: "Metoprolol Succinate 50mg ER Tablet - 1 Tablet by Mouth Twice a Day", name: "metoprolol", strength: "50 mg", form: /extended/i, quantity: 60 },
+  { line: "Thiamine 100mg Tablet – 2 Tablets by Mouth Once a Day", name: "thiamine", quantity: 60, otc: true },
+  { line: "Docusate 50mg – Senna 8.6mg Tablet - 1 Tablet by Mouth Once a Day AS NEEDED", name: "docusate", quantity: 30, otc: true },
+  { line: "Toprol XL (metoprolol succinate) 25 mg daily", name: "toprol", strength: "25 mg", form: /extended/i, quantity: 30 },
+  { line: "Vitamin D3 (cholecalciferol, OTC) 1000 units daily", name: "cholecalciferol", quantity: 30, otc: true },
+  { line: "Nitroglycerin 0.4mg Sublingual Tablet – 1 Tab Under Tongue Every 5 Minutes AS NEEDED (Do not exceed 3 doses/15 minutes).", name: "nitroglycerin", strength: "0.4 mg", form: /sublingual/i, otc: false },
 ];
 
 let failures = 0;
@@ -89,15 +109,45 @@ for (const testCase of CASES) {
     if (drafts.length !== 1) problems.push(`${drafts.length} drafts`);
     if (!draft.drugName.toLowerCase().includes(testCase.name.toLowerCase())) problems.push(`name ${draft.drugName}`);
     if (testCase.supply !== undefined && Boolean(draft.isSupply) !== testCase.supply) problems.push(`supply ${draft.isSupply}`);
+    if (testCase.otc !== undefined && Boolean(draft.isOtc) !== testCase.otc) problems.push(`otc ${Boolean(draft.isOtc)}`);
     if (testCase.strength !== undefined && (selectedStrength ?? "").toLowerCase() !== (testCase.strength ?? "").toLowerCase())
       problems.push(`strength ${selectedStrength}`);
     if (testCase.form && !testCase.form.test(selectedForm)) problems.push(`form ${selectedForm || "(none)"}`);
     if (testCase.quantity !== undefined && draft.monthlyQuantity !== testCase.quantity) problems.push(`quantity ${draft.monthlyQuantity}`);
   }
   if (problems.length > 0) failures += 1;
-  const summary = draft ? `${draft.drugName} | ${selectedStrength ?? "-"} | ${selectedForm || "-"} | qty ${draft.monthlyQuantity}` : "-";
+  const summary = drafts.length > 0
+    ? drafts.map((item) => `${item.drugName} | ${item.strengths.find((option) => option.selected)?.label ?? "-"} | ${item.forms.find((option) => option.selected)?.label || "-"} | qty ${item.monthlyQuantity}${item.isOtc ? " | OTC" : ""}`).join("\n     ")
+    : "-";
   console.log(`${problems.length ? "FAIL" : "ok  "} ${testCase.line}\n     ${summary}${problems.length ? `\n     ${problems.join("; ")}` : ""}`);
 }
 
-console.log(`\n${CASES.length - failures}/${CASES.length} passed`);
+// A fix taught on the comparison page replaces the parser's reading; the original line still sets the quantity.
+{
+  const { mkdtemp } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  process.env.KNOWLEDGE_DIR = await mkdtemp(path.join(os.tmpdir(), "check-meds-"));
+  delete process.env.KNOWLEDGE_REPO;
+  delete process.env.KNOWLEDGE_TOKEN;
+  const memory = await load("services/assistant/memory");
+  const { medicationLineKey } = await load("services/med-line-normalizer");
+  const { parseTypedLine } = await load("services/med-list-parser");
+  const line = "Ferrets 325 - 1 tab by mouth twice a day";
+  await memory.saveLineFix(medicationLineKey(line), line, "ferrous fumarate 325 mg tablet");
+  await memory.setOtc("Ferrous Fumarate", false);
+  const drafts = await parseTypedLine(line);
+  const draft = drafts[0];
+  const problems = [];
+  if (drafts.length !== 1) problems.push(`${drafts.length} drafts`);
+  if (!/ferrous fumarate/i.test(draft?.drugName ?? "")) problems.push(`name ${draft?.drugName}`);
+  if (draft?.monthlyQuantity !== 60) problems.push(`quantity ${draft?.monthlyQuantity}`);
+  if (draft?.isOtc !== false) problems.push("OTC marking not applied");
+  if (!draft?.learnedFix) problems.push("learnedFix missing");
+  if (draft?.rawLine !== line) problems.push(`rawLine ${draft?.rawLine}`);
+  console.log(`${problems.length ? "FAIL" : "ok  "} learned line fix: ${line}${problems.length ? `\n     ${problems.join("; ")}` : ""}`);
+  if (problems.length) failures += 1;
+}
+
+console.log(`\n${CASES.length + 1 - failures}/${CASES.length + 1} passed`);
 process.exitCode = failures > 0 ? 1 : 0;

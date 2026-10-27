@@ -25,7 +25,8 @@ export interface SyncStatus extends SyncState {
   /** False when KNOWLEDGE_REPO or KNOWLEDGE_TOKEN is missing; the assistant then keeps knowledge on this computer only. */
   configured: boolean;
   repo: string | null;
-  counts: { rules: number; phrases: number; openRequests: number };
+  /** learnedLines counts learned medication lines and OTC markings. */
+  counts: { rules: number; phrases: number; openRequests: number; learnedLines: number };
 }
 
 const PULL_INTERVAL_MS = 60_000;
@@ -307,6 +308,7 @@ export async function syncStatus(): Promise<SyncStatus> {
       rules: active(file, "rule").length,
       phrases: active(file, "phrase").length,
       openRequests: active(file, "request").filter((item) => item.status !== "done").length,
+      learnedLines: active(file, "line").length + active(file, "otc").length,
     },
   };
 }
