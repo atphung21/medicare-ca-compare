@@ -678,7 +678,7 @@ async function typeZip(zipField: Locator, zip: string) {
   await zipField.click({ timeout: 2000 }).catch(() => undefined);
   await zipField.press("ControlOrMeta+A").catch(() => undefined);
   await zipField.press("Backspace").catch(() => undefined);
-  await zipField.pressSequentially(zip, { delay: 40 });
+  await zipField.pressSequentially(zip, { delay: 0 });
   if ((await zipField.inputValue().catch(() => "")) === zip) return;
   await zipField.evaluate((element, value) => {
     if (!(element instanceof HTMLInputElement)) return;
@@ -715,10 +715,24 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
   const countyRadio = (pattern: RegExp) =>
     page.getByRole("radio", { name: pattern }).or(page.getByLabel(pattern));
   const fullCounty = countyRadio(new RegExp(escapeRegExp(input.countyName), "i"));
-  const county = (await isVisible(fullCounty, 4000))
-    ? fullCounty
-    : countyRadio(new RegExp(`\\b${escapeRegExp(countyBaseName(input.countyName))}\\b`, "i"));
-  await isVisible(county, 6000);
+  const baseName = countyBaseName(input.countyName);
+  const countyChoices = [fullCounty];
+  if (baseName.toLowerCase() !== input.countyName.toLowerCase()) {
+    countyChoices.push(
+      countyRadio(new RegExp(`\\b${escapeRegExp(baseName)}\\b`, "i")),
+    );
+  }
+  // Medicare.gov often labels the radio "Orange" while we have "Orange County".
+  // Watch both at once so a short label is not stuck behind a 4s miss.
+  const county = await Promise.race(
+    countyChoices.map((choice) =>
+      choice
+        .first()
+        .waitFor({ state: "visible", timeout: 6000 })
+        .then(() => choice)
+        .catch(() => null),
+    ),
+  );
   const continueButton = page
     .getByRole("button", { name: /^continue$/i })
     .filter({ visible: true })
@@ -734,10 +748,11 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
       await typeZip(zipField, input.zipCode);
     }
     if (
-      await county
+      county &&
+      (await county
         .first()
         .isVisible()
-        .catch(() => false)
+        .catch(() => false))
     )
       await county
         .first()
