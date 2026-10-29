@@ -214,6 +214,14 @@ function readingFor(drug: DrugInput) {
     .join(" ");
 }
 
+function providerNames(text: string) {
+  return text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 1)
+    .map((name) => ({ name }));
+}
+
 function skippedNote(names: string[]) {
   if (names.length === 0) return "";
   return `${names.join(", ")} ${names.length === 1 ? "isn't" : "aren't"} on Medicare.gov's drug list, so the proof leaves ${names.length === 1 ? "it" : "them"} out. Test strips and other diabetic supplies are usually covered under Part B; vitamins and other over-the-counter items usually aren't covered by Part D.`;
@@ -259,6 +267,7 @@ export function CompareWorkspace() {
   ]);
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
   const [customPharmacyName, setCustomPharmacyName] = useState("");
+  const [providerText, setProviderText] = useState("");
   const [plans, setPlans] = useState<MedicarePlanComparison[]>([]);
   const [context, setContext] = useState<{
     zipCode: string;
@@ -317,6 +326,7 @@ export function CompareWorkspace() {
     planType,
     medications,
     selectedPharmacyIds,
+    providerText,
   ]);
   const proof = proofs[proofKey];
   const openProof = openProofKey === proofKey ? proof : undefined;
@@ -427,6 +437,7 @@ export function CompareWorkspace() {
     setSelectedPharmacyIds(["cvs", "walgreens", "mail-order"]);
     setCustomPharmacies([]);
     setCustomPharmacyName("");
+    setProviderText("");
     setPlans([]);
     setContext(null);
     setError("");
@@ -1005,10 +1016,6 @@ export function CompareWorkspace() {
     if (!county) return;
     const key = proofKey;
     const cached = proofs[key];
-    if (cached?.paused && cached.id) {
-      await continueProof(cached);
-      return;
-    }
     if (cached && !cached.error) {
       setOpenProofKey(key);
       return;
@@ -1029,6 +1036,7 @@ export function CompareWorkspace() {
           lisLevel,
           medications,
           pharmacies: selectedPharmacies,
+          providers: providerNames(providerText),
           planTypeFilter: planType,
           pauseForMissing: true,
         }),
@@ -1040,35 +1048,6 @@ export function CompareWorkspace() {
         url: "",
         error:
           "Medicare.gov proof could not be captured. The sample comparison is still available.",
-      };
-    } finally {
-      setProofLoading(false);
-    }
-    setProofs((current) => ({ ...current, [key]: result }));
-    if (result.images.length > 0 && !result.paused) setOpenProofKey(key);
-  }
-
-  /** Finishes a proof that paused so the user could add missing drugs by hand on Medicare.gov. */
-  async function continueProof(paused: ProofResult) {
-    if (!paused.id) return;
-    const key = proofKey;
-    setProofLoading(true);
-    let result: ProofResult;
-    try {
-      const response = await fetch(
-        `/api/medicare/proof/${encodeURIComponent(paused.id)}/continue`,
-        { method: "POST" },
-      );
-      const next = readProof(await response.json());
-      result = {
-        ...next,
-        id: next.id ?? paused.id,
-        missing: next.missing.length > 0 ? next.missing : paused.missing,
-      };
-    } catch {
-      result = {
-        ...paused,
-        error: "Could not reach the app to continue. Try Continue again.",
       };
     } finally {
       setProofLoading(false);
@@ -1256,6 +1235,24 @@ export function CompareWorkspace() {
                 </button>
               </div>
             </div>
+          </div>
+          <div className="mt-4 border-t border-[var(--line)] pt-3">
+            <label className="block text-sm">
+              <span className="font-semibold">Providers</span>
+              <span className="mt-1 block text-xs font-normal text-stone-600">
+                Optional. One doctor per line, first and last name, such as Jane
+                Smith or Smith, Jane. Leave this blank and the proof skips
+                providers.
+              </span>
+              <textarea
+                value={providerText}
+                onChange={(event) => setProviderText(event.target.value)}
+                rows={3}
+                placeholder={"Jane Smith\nSmith, Jane"}
+                aria-label="Providers, one doctor per line, first and last name"
+                className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
+              />
+            </label>
           </div>
           <div className="mt-4 border-t border-[var(--line)] pt-3">
             <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1679,18 +1676,41 @@ export function CompareWorkspace() {
                               ? `${note.unlistedStrength} is not a listed strength. Pick a strength`
                               : "Pick a strength"}
                           </p>
-                          <div className="flex flex-wrap gap-1">
-                            {strengthChoices.map((choice) => (
-                              <button
-                                key={choice}
-                                type="button"
-                                onClick={() => pickStrength(drug, choice)}
-                                className="rounded-full border border-[var(--line)] px-2 py-1 text-xs"
-                              >
-                                {choice}
-                              </button>
-                            ))}
-                          </div>
+                          {strengthChoices.length > 3 ? (
+                            <select
+                              aria-label={`Drug ${index + 1} strength`}
+                              value={
+                                strengthChoices.includes(drug.strength)
+                                  ? drug.strength
+                                  : ""
+                              }
+                              onChange={(event) => {
+                                if (event.target.value)
+                                  pickStrength(drug, event.target.value);
+                              }}
+                              className="w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
+                            >
+                              <option value="">Pick a strength</option>
+                              {strengthChoices.map((choice) => (
+                                <option key={choice} value={choice}>
+                                  {choice}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {strengthChoices.map((choice) => (
+                                <button
+                                  key={choice}
+                                  type="button"
+                                  onClick={() => pickStrength(drug, choice)}
+                                  className="rounded-full border border-[var(--line)] px-2 py-1 text-xs"
+                                >
+                                  {choice}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ) : null}
                       {confirmed ? (
@@ -1858,12 +1878,8 @@ export function CompareWorkspace() {
                         className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
                       >
                         {proofLoading
-                          ? proof?.paused
-                            ? "Finishing on Medicare.gov…"
-                            : "Opening Medicare.gov…"
-                          : proof?.paused
-                            ? "Continue to pharmacies and plans"
-                            : proof && !proof.error
+                          ? "Opening Medicare.gov…"
+                          : proof && !proof.error
                             ? "View Medicare.gov proof"
                             : "Capture Medicare.gov proof"}
                       </button>
@@ -1927,13 +1943,11 @@ export function CompareWorkspace() {
                   {proof && proof.missing.length > 0 ? (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
                       <p className="font-medium">
-                        {proof.paused
-                          ? `Medicare.gov couldn't add ${proof.missing.length === 1 ? "1 drug" : `${proof.missing.length} drugs`} automatically. The Medicare.gov window is waiting on the drug list: add ${proof.missing.length === 1 ? "it" : "them"} there by hand, then click Continue.`
-                          : `Not found automatically (${proof.missing.length}). Add ${proof.missing.length === 1 ? "this drug" : "these drugs"} by hand on Medicare.gov to price ${proof.missing.length === 1 ? "it" : "them"}.`}
+                        Not found automatically ({proof.missing.length}).
                       </p>
                       <ul className="mt-2 space-y-2">
-                        {proof.missing.map((drug) => (
-                          <li key={drug.name} className="flex items-start gap-3">
+                        {proof.missing.map((drug, index) => (
+                          <li key={`${drug.name}-${drug.strength}-${index}`} className="flex items-start gap-3">
                             {drug.src ? (
                               <button
                                 type="button"
@@ -1958,18 +1972,6 @@ export function CompareWorkspace() {
                           </li>
                         ))}
                       </ul>
-                      {proof.paused ? (
-                        <button
-                          type="button"
-                          onClick={() => void continueProof(proof)}
-                          disabled={proofLoading}
-                          className="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                        >
-                          {proofLoading
-                            ? "Finishing on Medicare.gov…"
-                            : "Continue to pharmacies and plans"}
-                        </button>
-                      ) : null}
                     </div>
                   ) : null}
                   {proof && proof.images.length > 0 ? (
@@ -2089,18 +2091,41 @@ function FormResolution({
       ) : (
         <p className="text-xs font-medium text-amber-800">Pick a form</p>
       )}
-      <div className="flex flex-wrap gap-1">
-        {options.map((variant) => (
-          <button
-            key={variant.rxcui}
-            type="button"
-            onClick={() => onSelect(variant)}
-            className={`rounded-full border px-2 py-1 text-xs ${drug.rxcui === variant.rxcui ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--line)]"}`}
-          >
-            {variant.dosageForm}
-          </button>
-        ))}
-      </div>
+      {options.length > 3 ? (
+        <select
+          aria-label="Form"
+          value={
+            options.some((variant) => variant.rxcui === drug.rxcui)
+              ? (drug.rxcui ?? "")
+              : ""
+          }
+          onChange={(event) => {
+            const variant = options.find((item) => item.rxcui === event.target.value);
+            if (variant) onSelect(variant);
+          }}
+          className="w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
+        >
+          <option value="">Pick a form</option>
+          {options.map((variant) => (
+            <option key={variant.rxcui} value={variant.rxcui}>
+              {variant.dosageForm}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {options.map((variant) => (
+            <button
+              key={variant.rxcui}
+              type="button"
+              onClick={() => onSelect(variant)}
+              className={`rounded-full border px-2 py-1 text-xs ${drug.rxcui === variant.rxcui ? "border-[var(--accent)] bg-[var(--accent)] text-white" : "border-[var(--line)]"}`}
+            >
+              {variant.dosageForm}
+            </button>
+          ))}
+        </div>
+      )}
       <label className="flex items-center gap-2 text-xs">
         <input
           type="checkbox"

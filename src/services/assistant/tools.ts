@@ -369,7 +369,7 @@ const tools: AssistantTool[] = [
     declaration: {
       name: "run_medicare_proof",
       description:
-        "Open Medicare.gov in a real browser, enter the session's ZIP, medications and pharmacies, and capture screenshots of the live plan results. Takes one to three minutes. Ask the user before running it.",
+        "Open Medicare.gov in a real browser, enter the session's ZIP, medications and pharmacies, skip providers when none were given, and report missing or skipped drugs. When a drug was not added, continue to the first plan's Change drugs or Add drugs page. Ask the user before running it.",
     },
     async run(_args, session) {
       const { request, problem } = compareRequest(session);

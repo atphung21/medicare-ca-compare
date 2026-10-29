@@ -17,6 +17,7 @@ export type WizardStep =
   | "drug-costs"
   | "drugs"
   | "pharmacies"
+  | "providers"
   | "results";
 
 export interface ProofCaptureInput extends CompareRequest {
@@ -24,11 +25,10 @@ export interface ProofCaptureInput extends CompareRequest {
   planId?: string;
   proofId?: string;
   planTypeFilter?: PlanCategory;
-  /**
-   * When a drug can't be added and the browser window is visible, stop on Medicare.gov's drug list
-   * so the user can add it by hand, then finish with continueMedicareProof.
-   */
+  /** Accepted from the comparison page. The proof no longer pauses before pharmacies. */
   pauseForMissing?: boolean;
+  /** Optional provider names. An empty list skips the provider page. */
+  providers?: { name: string }[];
 }
 
 /** A prescription drug the proof could not add to Medicare.gov's drug list. */
@@ -82,12 +82,13 @@ const PAUSE_MS = 30 * 60 * 1000;
 /** Kept on globalThis so a dev-server reload doesn't lose a window the user is still working in. */
 const pausedProofs: Map<string, ProofSession> = ((globalThis as { __medicarePausedProofs?: Map<string, ProofSession> })
   .__medicarePausedProofs ??= new Map());
+/** Each proof keeps its browser so the next search can open another window. */
+const proofBrowsers: Map<string, Browser> = ((globalThis as { __medicareProofBrowsers?: Map<string, Browser> })
+  .__medicareProofBrowsers ??= new Map());
 
 function planFinderUrl(contractYear: "2026" | "2027") {
   return `https://www.medicare.gov/plan-compare/#/?lang=en&year=${contractYear}`;
 }
-
-let proofBrowser: Browser | null = null;
 
 async function loadPlaywright() {
   // A direct import("playwright") is bundled into the Worker. A variable import()
@@ -122,14 +123,8 @@ export async function captureMedicareProof(
 
   const headless = process.env.PLAYWRIGHT_HEADLESS !== "false";
   const { chromium } = await loadPlaywright();
-  for (const [id, paused] of pausedProofs) {
-    clearTimeout(paused.timer);
-    pausedProofs.delete(id);
-    await paused.browser.close().catch(() => undefined);
-  }
-  if (proofBrowser) await proofBrowser.close().catch(() => undefined);
   const browser = await chromium.launch({ headless });
-  proofBrowser = browser;
+  proofBrowsers.set(proofId, browser);
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1100 },
   });
@@ -324,32 +319,7 @@ export async function captureMedicareProof(
     }
     await writeSearchLog(dir, searchLog);
     await returnToDrugList(page);
-    const added = input.medications.length - skipped.length - missing.length;
-    if (missing.length === 0 && added === 0) {
-      return await stop(
-        page,
-        dir,
-        proofId,
-        "drugs",
-        `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not on Medicare.gov's drug list. Supplies like test strips are usually covered under Part B; vitamins and other over-the-counter items usually aren't covered by Part D.`,
-      );
-    }
     const session: ProofSession = { browser, page, input, dir, proofId, missing, skipped };
-    if (missing.length > 0 && !headless && input.pauseForMissing) {
-      return await pauseForMissingDrugs(session);
-    }
-    if (added === 0) {
-      return {
-        ...(await stop(
-          page,
-          dir,
-          proofId,
-          "drugs",
-          `None of the drugs could be added automatically: ${missing.map((drug) => drug.name).join(", ")}.`,
-        )),
-        missing,
-      };
-    }
     return withLists(await finishFromDrugs(session), session);
   } catch (error) {
     const message =
@@ -360,7 +330,41 @@ export async function captureMedicareProof(
   }
 }
 
-/** Shows the drug list, then goes through Done adding drugs, pharmacies and the plan results. */
+/** Opens plan results, the first See plan details, then Change drugs or Add drugs. */
+async function openFirstPlanDrugList(page: Page, added: number) {
+  if (!/search-results/i.test(page.url())) {
+    await clickIfVisible(
+      page,
+      page.getByRole("button", { name: /continue to view plans|view plans|^continue$/i }),
+      4000,
+    );
+  }
+  const seeDetails = page
+    .getByRole("link", { name: /see plan details|plan details/i })
+    .or(page.getByRole("button", { name: /see plan details|plan details/i }));
+  const reached = await page
+    .waitForURL(/search-results/i, { timeout: 25000 })
+    .then(() => true)
+    .catch(async () => isVisible(seeDetails, 8000));
+  if (!reached) return "no-results" as const;
+  if (!(await clickIfVisible(page, seeDetails, 8000))) return "no-details" as const;
+  const wanted = added > 0 ? /change drugs/i : /add drugs/i;
+  const choice = page
+    .getByRole("link", { name: wanted })
+    .or(page.getByRole("button", { name: wanted }))
+    .or(page.getByRole("menuitem", { name: wanted }))
+    .filter({ hasNotText: /change drugs[\s/]+add drugs|add drugs[\s/]+change drugs/i });
+  const combined = page
+    .getByRole("button", { name: /change drugs[\s/]+add drugs|add drugs[\s/]+change drugs/i })
+    .or(page.getByRole("link", { name: /change drugs[\s/]+add drugs|add drugs[\s/]+change drugs/i }));
+  if (await combined.first().isVisible().catch(() => false)) {
+    await clickIfVisible(page, combined, 1000);
+  }
+  if (!(await clickIfVisible(page, choice, 8000))) return "no-drug-choice" as const;
+  return "ok" as const;
+}
+
+/** Shows the drug list, then pharmacies and providers. A named plan screenshots that plan. When a drug was not added, the first plan's Change drugs or Add drugs page is the stop. */
 async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResult> {
   const { page, dir, proofId, input, skipped, missing } = session;
   let step: WizardStep = "drugs";
@@ -445,52 +449,60 @@ async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResul
         "Continue to view plans was not on the page.",
       );
     }
-    const providers = page
+    step = "providers";
+    const skipProviders = page
       .getByRole("button", { name: /skip adding providers/i })
       .or(page.getByRole("link", { name: /skip adding providers/i }));
-    const resultsNow = page
-      .waitForURL(/search-results/i, { timeout: 8000 })
-      .then(() => "results" as const)
-      .catch(() => "pending" as const);
-    const skipNow = providers
-      .first()
-      .waitFor({ state: "visible", timeout: 8000 })
-      .then(() => "skip" as const)
-      .catch(() => "pending" as const);
-    if ((await Promise.race([resultsNow, skipNow])) === "skip") {
-      await clickIfVisible(page, providers, 1000);
+    const providerNames = (input.providers ?? [])
+      .map((provider) => provider.name.trim())
+      .filter((name) => name.length > 1);
+    const providerLastName = providerNameField(page, "last");
+    await Promise.race([
+      skipProviders.first().waitFor({ state: "visible", timeout: 8000 }).catch(() => undefined),
+      providerLastName.waitFor({ state: "visible", timeout: 8000 }).catch(() => undefined),
+    ]);
+    if (providerNames.length === 0) {
+      await clickIfVisible(page, skipProviders, 1000);
+    } else {
+      await addProviderList(page, providerNames, dir, missing);
     }
-
-    step = "results";
-    const reached = await page
-      .waitForURL(/search-results/i, { timeout: 25000 })
+    const providersShot = await saveProofShot(page, dir, "providers.png", false)
       .then(() => true)
-      .catch(async () =>
-        isVisible(
-          page
-            .getByRole("button", { name: /plan details/i })
-            .or(page.getByRole("link", { name: /plan details/i })),
-          8000,
-        ),
-      );
-    if (!reached) {
-      return await stop(
-        page,
-        dir,
-        proofId,
-        "results",
-        "The plan results page did not appear.",
-      );
-    }
-    await page
-      .getByRole("button", { name: /plan details/i })
-      .or(page.getByRole("link", { name: /plan details/i }))
-      .first()
-      .waitFor({ state: "visible", timeout: 25000 })
-      .catch(() => undefined);
-    await page.waitForTimeout(500);
+      .catch(() => false);
+    const providerImages = [
+      ...proofListImages(),
+      ...(providersShot ? [{ label: "Providers", file: "providers.png" }] : []),
+    ];
 
     if (input.contractId && input.planId) {
+      if (!/search-results/i.test(page.url())) {
+        await clickIfVisible(
+          page,
+          page.getByRole("button", { name: /continue to view plans|view plans|^continue$/i }),
+          4000,
+        );
+      }
+      step = "results";
+      const reached = await page
+        .waitForURL(/search-results/i, { timeout: 25000 })
+        .then(() => true)
+        .catch(async () =>
+          isVisible(
+            page
+              .getByRole("button", { name: /plan details/i })
+              .or(page.getByRole("link", { name: /plan details/i })),
+            8000,
+          ),
+        );
+      if (!reached) {
+        return await stop(
+          page,
+          dir,
+          proofId,
+          "results",
+          "The plan results page did not appear.",
+        );
+      }
       const label = `${input.contractId}-${input.planId}`;
       const card = page.getByText(label, { exact: false }).first();
       if (!(await isVisible(card, 5000))) {
@@ -514,33 +526,61 @@ async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResul
         proofId,
         medicareGovUrl: page.url(),
         imageFile,
-        images: proofListImages(),
+        images: providerImages,
         pdf: false,
         step: "results",
         skipped,
       };
     }
 
-    const imageFile = "drugs.png";
-    let pdf = false;
-    try {
-      await page.pdf({
-        path: path.join(dir, "page.pdf"),
-        printBackground: true,
-      });
-      pdf = true;
-    } catch {
-      pdf = false;
+    const drugsLeftOff = missing.length > 0 || skipped.length > 0;
+    if (drugsLeftOff) {
+      step = "results";
+      const added = input.medications.length - skipped.length - missing.length;
+      const opened = await openFirstPlanDrugList(page, added);
+      if (opened !== "ok") {
+        return await stop(
+          page,
+          dir,
+          proofId,
+          "results",
+          opened === "no-results"
+            ? "The plan results page did not appear."
+            : opened === "no-details"
+              ? "See plan details was not on the results page."
+              : added > 0
+                ? "Change drugs was not on the plan."
+                : "Add drugs was not on the plan.",
+        );
+      }
+      const drugShot = await saveProofShot(page, dir, "plan-details.png", false)
+        .then(() => true)
+        .catch(() => false);
+      const drugImages = drugShot
+        ? [...providerImages, { label: added > 0 ? "Change drugs" : "Add drugs", file: "plan-details.png" }]
+        : providerImages;
+      await writeMeta(dir, page.url(), "results");
+      return {
+        ok: true,
+        proofId,
+        medicareGovUrl: page.url(),
+        imageFile: drugShot ? "plan-details.png" : providersShot ? "providers.png" : "pharmacies.png",
+        images: drugImages,
+        pdf: false,
+        step: "results",
+        skipped,
+      };
     }
-    await writeMeta(dir, page.url());
+
+    await writeMeta(dir, page.url(), "providers");
     return {
       ok: true,
       proofId,
       medicareGovUrl: page.url(),
-      imageFile,
-      images: proofListImages(),
-      pdf,
-      step: "results",
+      imageFile: providersShot ? "providers.png" : "pharmacies.png",
+      images: providerImages,
+      pdf: false,
+      step: "providers",
       skipped,
     };
   } catch (error) {
@@ -558,43 +598,16 @@ function withLists(result: ProofCaptureResult, session: ProofSession): ProofCapt
     : { ...result, missing: session.missing };
 }
 
-/** Leaves the visible window on Medicare.gov's drug list so the user can add the missing drugs by hand. */
-async function pauseForMissingDrugs(session: ProofSession): Promise<ProofCaptureResult> {
-  const { page, dir, proofId, missing, skipped } = session;
-  await page
-    .getByRole("heading", { name: /your drugs|drug list/i })
-    .first()
-    .scrollIntoViewIfNeeded({ timeout: 1500 })
-    .catch(() => undefined);
-  await saveProofShot(page, dir, "drugs.png", false).catch(() => undefined);
-  await writeMeta(dir, page.url(), "drugs");
-  await page.bringToFront().catch(() => undefined);
-  keepPaused(session);
-  return {
-    ok: true,
-    paused: true,
-    proofId,
-    medicareGovUrl: page.url(),
-    imageFile: "drugs.png",
-    images: [{ label: "Drugs added automatically", file: "drugs.png" }],
-    pdf: false,
-    step: "drugs",
-    skipped,
-    missing,
-  };
-}
-
 function keepPaused(session: ProofSession) {
   clearTimeout(session.timer);
   session.timer = setTimeout(() => {
     pausedProofs.delete(session.proofId);
-    void session.browser.close().catch(() => undefined);
   }, PAUSE_MS);
   session.timer.unref?.();
   pausedProofs.set(session.proofId, session);
 }
 
-/** Finishes a paused proof after the user added drugs by hand: pharmacies, then the plan results. */
+/** Finishes a paused proof: pharmacies and providers, then the missing and skipped drugs. */
 export async function continueMedicareProof(proofId: string): Promise<ProofCaptureResult> {
   const session = pausedProofs.get(proofId);
   const gone = {
@@ -607,7 +620,7 @@ export async function continueMedicareProof(proofId: string): Promise<ProofCaptu
   if (!session) {
     return {
       ...gone,
-      error: "That Medicare.gov window is no longer open (it closes after 30 minutes or when a new proof starts). Capture the proof again.",
+      error: "That proof is no longer waiting to continue. Its Medicare.gov window stays open until you close it.",
     };
   }
   pausedProofs.delete(proofId);
@@ -712,27 +725,6 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
       .or(page.getByLabel(yearLabel));
     await clickIfVisible(page, year, 400);
   }
-  const countyRadio = (pattern: RegExp) =>
-    page.getByRole("radio", { name: pattern }).or(page.getByLabel(pattern));
-  const fullCounty = countyRadio(new RegExp(escapeRegExp(input.countyName), "i"));
-  const baseName = countyBaseName(input.countyName);
-  const countyChoices = [fullCounty];
-  if (baseName.toLowerCase() !== input.countyName.toLowerCase()) {
-    countyChoices.push(
-      countyRadio(new RegExp(`\\b${escapeRegExp(baseName)}\\b`, "i")),
-    );
-  }
-  // Medicare.gov often labels the radio "Orange" while we have "Orange County".
-  // Watch both at once so a short label is not stuck behind a 4s miss.
-  const county = await Promise.race(
-    countyChoices.map((choice) =>
-      choice
-        .first()
-        .waitFor({ state: "visible", timeout: 6000 })
-        .then(() => choice)
-        .catch(() => null),
-    ),
-  );
   const continueButton = page
     .getByRole("button", { name: /^continue$/i })
     .filter({ visible: true })
@@ -747,13 +739,8 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
     if ((await zipField.inputValue().catch(() => "")) !== input.zipCode) {
       await typeZip(zipField, input.zipCode);
     }
-    if (
-      county &&
-      (await county
-        .first()
-        .isVisible()
-        .catch(() => false))
-    )
+    const county = await countyAlreadyVisible(page, input);
+    if (county)
       await county
         .first()
         .click({ timeout: 400 })
@@ -762,6 +749,19 @@ async function submitZipAndYear(page: Page, input: ProofCaptureInput) {
     if (await isVisible(planChoices, attempt === 0 ? 2000 : 4000)) return true;
   }
   return false;
+}
+
+/** A county radio is clicked only when it is already on screen. Census name first, then the short name. */
+async function countyAlreadyVisible(page: Page, input: ProofCaptureInput) {
+  const radio = (pattern: RegExp) =>
+    page.getByRole("radio", { name: pattern }).or(page.getByLabel(pattern));
+  const fullCounty = radio(new RegExp(escapeRegExp(input.countyName), "i"));
+  if (await fullCounty.first().isVisible().catch(() => false)) return fullCounty;
+  const baseName = countyBaseName(input.countyName);
+  if (baseName.toLowerCase() === input.countyName.toLowerCase()) return null;
+  const shortCounty = radio(new RegExp(`\\b${escapeRegExp(baseName)}\\b`, "i"));
+  if (await shortCounty.first().isVisible().catch(() => false)) return shortCounty;
+  return null;
 }
 
 interface DrugSearchLog {
@@ -871,6 +871,156 @@ async function addMedication(
   if (!added) return finish("failed");
   await answerGenericPrompt(page, medication.acceptGeneric, 400);
   return finish("added");
+}
+
+function providerNameField(page: Page, which: "first" | "last") {
+  const label = which === "first" ? /first name/i : /last name/i;
+  return page
+    .getByRole("combobox", { name: label })
+    .or(page.getByRole("textbox", { name: label }))
+    .or(page.getByPlaceholder(label))
+    .or(page.locator(`input[name*="${which}" i]`))
+    .first();
+}
+
+/** "Jane Smith", "Mary Ann Smith", "Smith, Jane", and "Jane Smith MD" become a first and last name. */
+export function splitProviderName(line: string) {
+  const trimmed = line.trim().replace(/\s+/g, " ");
+  const comma = trimmed.indexOf(",");
+  if (comma >= 0) {
+    const lastWords = stripProviderTokens(trimmed.slice(0, comma));
+    const firstWords = stripProviderTokens(trimmed.slice(comma + 1));
+    if (lastWords.length > 0 && firstWords.length > 0) {
+      return { first: firstWords.join(" "), last: lastWords.join(" ") };
+    }
+  }
+  const words = stripProviderTokens(trimmed);
+  if (words.length <= 1) return { first: "", last: words[0] ?? "" };
+  return { first: words.slice(0, -1).join(" "), last: words[words.length - 1] };
+}
+
+function stripProviderTokens(value: string) {
+  const words = value
+    .split(/\s+/)
+    .map((word) => word.replace(/,/g, "").trim())
+    .filter(Boolean);
+  while (words.length > 0 && isProviderTitle(words[0])) words.shift();
+  while (words.length > 0 && isProviderCredential(words[words.length - 1])) words.pop();
+  return words;
+}
+
+function isProviderTitle(word: string) {
+  return /^(?:dr|doctor)$/i.test(word.replace(/\./g, ""));
+}
+
+function isProviderCredential(word: string) {
+  return /^(?:md|do|np|pa|pac|rn|jr|sr|ii|iii|iv)$/i.test(word.replace(/[.-]/g, ""));
+}
+
+/** Types each provider's first and last name, clicks Search, and adds the first result. A miss is recorded and the next name is tried. */
+async function addProviderList(page: Page, names: string[], dir: string, missing: MissingDrug[]) {
+  for (const name of names) {
+    const { first, last } = splitProviderName(name);
+    const firstField = providerNameField(page, "first");
+    const lastField = providerNameField(page, "last");
+    if (!last) {
+      await recordUnmatchedProvider(page, dir, missing, name, `${name} needs a last name.`);
+      continue;
+    }
+    if (!(await isVisible(lastField, 2500))) {
+      const another = page.getByRole("button", { name: /add another provider/i });
+      if (!(await clickIfVisible(page, another, 1500)) || !(await isVisible(lastField, 2500))) {
+        await recordUnmatchedProvider(page, dir, missing, name, "Medicare.gov's provider search was not on the page.");
+        continue;
+      }
+    }
+    if (await isVisible(firstField, 500)) await firstField.fill(first);
+    await lastField.fill(last);
+    const addButton = /^(?:add|add provider|add to my providers)$/i;
+    const firstRow = page
+      .locator("li, article, tr, [role='listitem']")
+      .filter({ has: page.getByRole("button", { name: addButton }) })
+      .first();
+    const beforeResults = ((await firstRow.innerText().catch(() => "")) ?? "").trim();
+    const followingSearch = providerSearchButton(lastField);
+    const formSearch = providerFormSearchButton(lastField);
+    await followingSearch
+      .first()
+      .scrollIntoViewIfNeeded()
+      .catch(() => undefined);
+    const searched =
+      (await clickIfVisible(page, followingSearch, 4000)) ||
+      (await formSearch
+        .first()
+        .scrollIntoViewIfNeeded()
+        .then(() => clickIfVisible(page, formSearch, 2000))
+        .catch(() => false));
+    if (!searched) {
+      await recordUnmatchedProvider(page, dir, missing, name, "Medicare.gov's provider Search button was not on the page.");
+      continue;
+    }
+    const firstResult = firstRow.getByRole("button", { name: addButton });
+    const noResults = page.getByText(/no providers found|no results found|couldn't find|could not find|0 providers/i);
+    const showed = await waitForProviderResults(page, firstRow, beforeResults, noResults);
+    const added = showed === "results" && (await clickIfVisible(page, firstResult, 1000));
+    if (!added) {
+      await recordUnmatchedProvider(
+        page,
+        dir,
+        missing,
+        name,
+        `Medicare.gov's provider search had no match for ${name}.`,
+      );
+    }
+  }
+}
+
+/** Waits until this search's first result is on screen, or Medicare.gov says nothing was found. */
+async function waitForProviderResults(
+  page: Page,
+  firstRow: Locator,
+  beforeResults: string,
+  noResults: Locator,
+) {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (await noResults.first().isVisible().catch(() => false)) return "none" as const;
+    const current = ((await firstRow.innerText().catch(() => "")) ?? "").trim();
+    if (current && current !== beforeResults) return "results" as const;
+    await page.waitForTimeout(200);
+  }
+  return "timeout" as const;
+}
+
+/** The next Search control after the last-name field. */
+function providerSearchButton(lastField: Locator) {
+  return lastField.locator(
+    "xpath=following::button[contains(translate(normalize-space(.), 'SEARCH', 'search'), 'search')][1] | following::a[contains(translate(normalize-space(.), 'SEARCH', 'search'), 'search')][1] | following::*[@role='button' and contains(translate(@aria-label, 'SEARCH', 'search'), 'search')][1] | following::input[@type='submit' and contains(translate(@value, 'SEARCH', 'search'), 'search')][1]",
+  );
+}
+
+/** A Search button, link, or submit input in the same form as the last-name field. */
+function providerFormSearchButton(lastField: Locator) {
+  const form = lastField.locator("xpath=ancestor::form[1]");
+  return form
+    .getByRole("button", { name: /search/i })
+    .or(form.getByRole("link", { name: /search/i }))
+    .or(form.locator("button, a").filter({ hasText: /search/i }))
+    .or(form.locator("input[type='submit'][value*='search' i]"));
+}
+
+async function recordUnmatchedProvider(
+  page: Page,
+  dir: string,
+  missing: MissingDrug[],
+  name: string,
+  reason: string,
+) {
+  const image = `missing-${missing.length + 1}.png`;
+  const shot = await saveProofShot(page, dir, image, true)
+    .then(() => true)
+    .catch(() => false);
+  missing.push({ name, strength: "", reason, ...(shot ? { image } : {}) });
 }
 
 /** Types a search term and returns the first dozen suggestions, or none if Medicare.gov shows no match. */

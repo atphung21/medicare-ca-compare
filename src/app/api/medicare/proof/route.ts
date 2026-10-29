@@ -9,6 +9,7 @@ const ProofRequestSchema = CompareRequestSchema.extend({
   proofId: z.string().optional(),
   planTypeFilter: PlanCategorySchema.optional(),
   pauseForMissing: z.boolean().optional(),
+  providers: z.array(z.object({ name: z.string().min(1) })).optional(),
 });
 
 export async function POST(request: Request) {
