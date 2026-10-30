@@ -153,18 +153,130 @@ export function coarseDosageForm(label: string): DosageForm {
 
 const NEAREST = "Nearest store to the ZIP code";
 
-/** National chains. The Medicare.gov proof picks the closest store of each chain to the ZIP code. */
+function retailChain(id: string, name: string, chain = name): PharmacyInput {
+  return { id, name, chain, address: NEAREST, isMailOrder: false };
+}
+
+const MAIL_ORDER: PharmacyInput = {
+  id: "mail-order",
+  name: "Plan mail order",
+  chain: "Mail Order",
+  address: "Home delivery",
+  isMailOrder: true,
+};
+
+const CHAINS: Record<string, PharmacyInput> = {
+  cvs: retailChain("cvs", "CVS Pharmacy", "CVS"),
+  walgreens: retailChain("walgreens", "Walgreens"),
+  walmart: retailChain("walmart", "Walmart Pharmacy", "Walmart"),
+  costco: retailChain("costco", "Costco Pharmacy", "Costco"),
+  ralphs: retailChain("ralphs", "Ralphs"),
+  vons: retailChain("vons", "Vons"),
+  safeway: retailChain("safeway", "Safeway"),
+  albertsons: retailChain("albertsons", "Albertsons"),
+  heb: retailChain("heb", "H-E-B", "H-E-B"),
+  kroger: retailChain("kroger", "Kroger Pharmacy", "Kroger"),
+  publix: retailChain("publix", "Publix"),
+  "fred-meyer": retailChain("fred-meyer", "Fred Meyer", "Fred Meyer"),
+  frys: retailChain("frys", "Fry's", "Fry's"),
+  "king-soopers": retailChain("king-soopers", "King Soopers", "King Soopers"),
+  "stop-and-shop": retailChain("stop-and-shop", "Stop & Shop", "Stop & Shop"),
+  giant: retailChain("giant", "Giant"),
+  "jewel-osco": retailChain("jewel-osco", "Jewel-Osco", "Jewel-Osco"),
+  meijer: retailChain("meijer", "Meijer"),
+  "hy-vee": retailChain("hy-vee", "Hy-Vee", "Hy-Vee"),
+  dillons: retailChain("dillons", "Dillons"),
+  smiths: retailChain("smiths", "Smith's", "Smith's"),
+  hannaford: retailChain("hannaford", "Hannaford"),
+  shaws: retailChain("shaws", "Shaw's", "Shaw's"),
+  schnucks: retailChain("schnucks", "Schnucks"),
+  shoprite: retailChain("shoprite", "ShopRite", "ShopRite"),
+  wegmans: retailChain("wegmans", "Wegmans"),
+  "harris-teeter": retailChain("harris-teeter", "Harris Teeter", "Harris Teeter"),
+  "giant-eagle": retailChain("giant-eagle", "Giant Eagle", "Giant Eagle"),
+  weis: retailChain("weis", "Weis"),
+  qfc: retailChain("qfc", "QFC"),
+  "pick-n-save": retailChain("pick-n-save", "Pick 'n Save", "Pick 'n Save"),
+};
+
+/** Shown first wherever those chains are the usual big stores. */
+const NATIONAL = ["cvs", "walgreens", "walmart", "costco"];
+const NO_COSTCO = new Set(["WV", "WY"]);
+
+/** Extra grocery banners after the national chains. The combined list is capped at eight. */
+const STATE_EXTRA: Record<string, string[]> = {
+  AL: ["publix"],
+  AK: ["fred-meyer"],
+  AZ: ["frys", "safeway"],
+  AR: ["kroger"],
+  CA: ["ralphs", "vons", "safeway", "albertsons"],
+  CO: ["king-soopers", "safeway"],
+  CT: ["stop-and-shop"],
+  DC: ["giant", "safeway"],
+  DE: ["giant"],
+  FL: ["publix"],
+  GA: ["publix", "kroger"],
+  HI: ["safeway"],
+  ID: ["fred-meyer", "albertsons"],
+  IL: ["jewel-osco"],
+  IN: ["kroger", "meijer"],
+  IA: ["hy-vee"],
+  KS: ["dillons", "hy-vee"],
+  KY: ["kroger"],
+  ME: ["hannaford", "shaws"],
+  MD: ["giant", "safeway"],
+  MA: ["stop-and-shop", "shaws"],
+  MI: ["meijer", "kroger"],
+  MN: ["hy-vee"],
+  MS: ["kroger"],
+  MO: ["schnucks", "hy-vee"],
+  MT: ["albertsons"],
+  NE: ["hy-vee"],
+  NV: ["smiths"],
+  NH: ["hannaford"],
+  NJ: ["shoprite", "stop-and-shop"],
+  NM: ["smiths"],
+  NY: ["stop-and-shop", "wegmans"],
+  NC: ["publix", "harris-teeter"],
+  OH: ["kroger", "meijer", "giant-eagle"],
+  OR: ["fred-meyer", "safeway"],
+  PA: ["giant", "weis"],
+  RI: ["stop-and-shop"],
+  SC: ["publix"],
+  SD: ["hy-vee"],
+  TN: ["kroger", "publix"],
+  TX: ["heb", "kroger"],
+  UT: ["smiths"],
+  VT: ["hannaford"],
+  VA: ["kroger", "publix", "harris-teeter"],
+  WA: ["fred-meyer", "safeway", "qfc"],
+  WV: ["kroger"],
+  WI: ["meijer", "pick-n-save"],
+  WY: ["albertsons", "smiths"],
+};
+
+/** Every chain the assistant can name. The comparison page shows pharmaciesForState instead. */
 export const PHARMACY_CATALOG: PharmacyInput[] = [
-  { id: "cvs", name: "CVS Pharmacy", chain: "CVS", address: NEAREST, isMailOrder: false },
-  { id: "walgreens", name: "Walgreens", chain: "Walgreens", address: NEAREST, isMailOrder: false },
-  { id: "walmart", name: "Walmart Pharmacy", chain: "Walmart", address: NEAREST, isMailOrder: false },
-  { id: "costco", name: "Costco Pharmacy", chain: "Costco", address: NEAREST, isMailOrder: false },
-  { id: "kroger", name: "Kroger Pharmacy", chain: "Kroger", address: NEAREST, isMailOrder: false },
-  {
-    id: "mail-order",
-    name: "Plan mail order",
-    chain: "Mail Order",
-    address: "Home delivery",
-    isMailOrder: true,
-  },
+  ...NATIONAL.map((id) => CHAINS[id]),
+  ...Object.values(CHAINS).filter((chain) => !NATIONAL.includes(chain.id)),
+  MAIL_ORDER,
 ];
+
+/** Up to eight big retail pharmacies for a state, then mail order. An unknown state gets the national four. */
+export function pharmaciesForState(state: string): PharmacyInput[] {
+  const code = state.trim().toUpperCase();
+  const known = /^[A-Z]{2}$/.test(code);
+  const national = known && NO_COSTCO.has(code) ? NATIONAL.filter((id) => id !== "costco") : NATIONAL;
+  const ids = known
+    ? [...new Set([...national, ...(STATE_EXTRA[code] ?? [])])].slice(0, 8)
+    : [...NATIONAL];
+  return [...ids.map((id) => CHAINS[id]), MAIL_ORDER];
+}
+
+/** Mail order, plus CVS and Walgreens when that state lists them, otherwise the first two retail names. */
+export function defaultPharmacyIds(state: string) {
+  const retail = pharmaciesForState(state).filter((pharmacy) => !pharmacy.isMailOrder);
+  const named = ["cvs", "walgreens"].filter((id) => retail.some((pharmacy) => pharmacy.id === id));
+  const firstTwo = (named.length > 0 ? named : retail.map((pharmacy) => pharmacy.id)).slice(0, 2);
+  return [...firstTwo, "mail-order"];
+}

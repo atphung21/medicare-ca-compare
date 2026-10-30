@@ -13,7 +13,8 @@ import {
 import { cardsFromDraft } from "@/lib/draft-cards";
 import type { ZipLocation } from "@/lib/us-location";
 import {
-  PHARMACY_CATALOG,
+  defaultPharmacyIds,
+  pharmaciesForState,
   type CompareRequest,
   type DosageForm,
   type DrugInput,
@@ -28,7 +29,7 @@ import type { SpellingSuggestion } from "@/services/drug-spellcheck";
 import type { MedicationDraft } from "@/services/med-list-parser";
 import { partDCap } from "@/services/lis";
 import Link from "next/link";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 const FORMS: { value: DosageForm; label: string }[] = [
   { value: "TABLET", label: "Tablet" },
@@ -260,11 +261,13 @@ export function CompareWorkspace() {
   const [formOptions, setFormOptions] = useState<
     Record<string, ResolvedVariant[]>
   >({});
-  const [selectedPharmacyIds, setSelectedPharmacyIds] = useState<string[]>([
-    "cvs",
-    "walgreens",
-    "mail-order",
-  ]);
+  const [catalogPharmacies, setCatalogPharmacies] = useState<PharmacyInput[]>(() =>
+    pharmaciesForState("CA"),
+  );
+  const pharmacyState = useRef("CA");
+  const [selectedPharmacyIds, setSelectedPharmacyIds] = useState<string[]>(() =>
+    defaultPharmacyIds("CA"),
+  );
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
   const [customPharmacyName, setCustomPharmacyName] = useState("");
   const [providerText, setProviderText] = useState("");
@@ -314,7 +317,7 @@ export function CompareWorkspace() {
 
   const counties = location?.zipCode === zipCode ? location.counties : [];
   const countyChoices = counties;
-  const pharmacyChoices = [...PHARMACY_CATALOG, ...customPharmacies];
+  const pharmacyChoices = [...catalogPharmacies, ...customPharmacies];
   const selectedPharmacies = pharmacyChoices.filter((pharmacy) =>
     selectedPharmacyIds.includes(pharmacy.id),
   );
@@ -412,6 +415,20 @@ export function CompareWorkspace() {
             ? current
             : (found.counties[0]?.fips ?? ""),
         );
+        if (found.state === pharmacyState.current) return;
+        pharmacyState.current = found.state;
+        const defaults = defaultPharmacyIds(found.state);
+        const offered = new Set(pharmaciesForState(found.state).map((pharmacy) => pharmacy.id));
+        setCatalogPharmacies(pharmaciesForState(found.state));
+        setSelectedPharmacyIds((current) => {
+          const customSelected = current.filter((id) => id.startsWith("custom-"));
+          return [...defaults.filter((id) => id !== "mail-order"), ...customSelected, "mail-order"];
+        });
+        setPreferredPharmacyId((current) =>
+          current.startsWith("custom-") || offered.has(current)
+            ? current
+            : (defaults.find((id) => id !== "mail-order") ?? "mail-order"),
+        );
       })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
@@ -434,7 +451,9 @@ export function CompareWorkspace() {
     setMedications([]);
     setDrugNotes({});
     setFormOptions({});
-    setSelectedPharmacyIds(["cvs", "walgreens", "mail-order"]);
+    pharmacyState.current = "";
+    setCatalogPharmacies(pharmaciesForState(""));
+    setSelectedPharmacyIds(defaultPharmacyIds(""));
     setCustomPharmacies([]);
     setCustomPharmacyName("");
     setProviderText("");
@@ -1184,8 +1203,9 @@ export function CompareWorkspace() {
           <div className="mt-4 border-t border-[var(--line)] pt-3">
             <p className="text-sm font-semibold">Pharmacies</p>
             <p className="mt-1 text-xs text-stone-600">
-              Up to five retail pharmacies, plus mail order. {retailCount}{" "}
-              retail selected.
+              Up to five retail pharmacies, plus mail order.
+              {location?.state ? ` Big chains in ${location.state}.` : ""}{" "}
+              {retailCount} retail selected.
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
               {pharmacyChoices.map((pharmacy) => (
