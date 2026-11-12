@@ -954,23 +954,23 @@ export function CompareWorkspace() {
   );
 
   return (
-    <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
+    <main className="mx-auto max-w-[1400px] px-4 py-8 pb-28 sm:px-6">
       <div className="mb-6 space-y-4">
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end pr-36">
           <Link
             href="/assistant"
             className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
           >
             Assistant
           </Link>
-          <button
-            type="button"
-            onClick={resetPage}
-            className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
-          >
-            Reset Form
-          </button>
         </div>
+        <button
+          type="button"
+          onClick={resetPage}
+          className="fixed top-4 right-4 z-10 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium shadow-sm"
+        >
+          Reset Form
+        </button>
         <header className="mx-auto max-w-3xl text-center">
           <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
             Licensed Agent Planning Tool
@@ -1779,17 +1779,21 @@ export function CompareWorkspace() {
             >
               Add a Drug
             </button>
-            {error ? (
-              <p className="text-sm text-[var(--warn)]">{error}</p>
-            ) : null}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
-            >
+          </div>
+        </div>
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex flex-col items-center gap-2 px-4 py-3">
+          {error ? (
+            <p className="pointer-events-auto rounded-lg bg-amber-100 px-3 py-1.5 text-center text-sm font-medium text-[var(--warn)]">
+              {error}
+            </p>
+          ) : null}
+          <button
+            type="submit"
+            disabled={loading}
+            className="pointer-events-auto w-full max-w-md rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+          >
               {loading ? "Comparing…" : "Compare Plans"}
             </button>
-          </div>
         </div>
       </form>
       {openProof ? (
