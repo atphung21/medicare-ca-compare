@@ -1235,7 +1235,15 @@ export function CompareWorkspace() {
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <aside className="order-2 min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 lg:order-1">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-              <span />
+              <button
+                type="button"
+                className="justify-self-start text-sm font-medium text-[var(--accent)]"
+                onClick={() =>
+                  setMedications((current) => [...current, newDrug()])
+                }
+              >
+                Add a Drug
+              </button>
               <h2 className="text-center text-sm font-semibold">Medications</h2>
               <div className="justify-self-end">
               {medications.length > 0 ? (
