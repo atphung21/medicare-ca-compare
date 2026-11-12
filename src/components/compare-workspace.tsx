@@ -140,12 +140,6 @@ function comparisonQuote(plan: MedicarePlanComparison) {
   );
 }
 
-function networkLabel(status: PharmacyPlanQuote["networkStatus"]) {
-  if (status === "PREFERRED") return "Preferred";
-  if (status === "STANDARD") return "Standard";
-  return "Out of network";
-}
-
 async function lookupLocation(zipCode: string, signal: AbortSignal) {
   const response = await fetch(`/api/location?zip=${zipCode}`, { signal });
   const body = (await response.json()) as ZipLocation & { error?: string };
@@ -844,55 +838,6 @@ export function CompareWorkspace() {
     } finally {
       setLoading(false);
     }
-  }
-
-  function exportCsv() {
-    const pharmacyHeaders = (plans[0]?.pharmacyQuotes ?? []).flatMap(
-      (quote) => [
-        `${quote.pharmacyName} network`,
-        `${quote.pharmacyName} annual drug cost`,
-      ],
-    );
-    const header = [
-      "Plan",
-      "Carrier",
-      "Type",
-      "Stars",
-      "Monthly premium",
-      "Deductible",
-      "Comparison pharmacy",
-      "Drug cost",
-      "Total annual",
-      ...pharmacyHeaders,
-    ];
-    const lines = filtered.map((plan) => {
-      const quote = comparisonQuote(plan);
-      const cells = [
-        plan.planName,
-        plan.carrierName,
-        plan.planType,
-        String(plan.starRating),
-        String(plan.monthlyPremium),
-        String(plan.annualDrugDeductible),
-        quote.pharmacyName,
-        String(quote.annualDrugCostOop),
-        String(quote.totalAnnualCost),
-        ...plan.pharmacyQuotes.flatMap((item) => [
-          networkLabel(item.networkStatus),
-          String(item.annualDrugCostOop),
-        ]),
-      ];
-      return cells.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(",");
-    });
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], {
-      type: "text/csv",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `medicare-comparison-${zipCode}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
   }
 
   async function onExtract(file: File) {
@@ -1682,20 +1627,13 @@ export function CompareWorkspace() {
                         type="button"
                         onClick={() => void captureProof()}
                         disabled={proofLoading}
-                        className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
+                        className="rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
                       >
                         {proofLoading
                           ? "Opening Medicare.gov…"
                           : proof && !proof.error
                             ? "View Medicare.gov Proof"
                             : "Capture Medicare.gov Proof"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={exportCsv}
-                        className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
-                      >
-                        Export Filtered CSV
                       </button>
                     </div>
                   </div>
