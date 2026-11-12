@@ -85,6 +85,36 @@ function repeatedDrugs(medications: DrugInput[]) {
     });
 }
 
+function DrugCheckSummary({
+  count,
+  repeats,
+}: {
+  count: number;
+  repeats: ReturnType<typeof repeatedDrugs>;
+}) {
+  if (count === 0) return null;
+  return (
+    <div className="space-y-2">
+      <p className="text-center text-sm text-stone-600">
+        {count} {count === 1 ? "drug" : "drugs"}
+      </p>
+      {repeats.length > 0 ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-left text-sm text-amber-950">
+          <p className="font-medium">Listed more than once</p>
+          <ul className="mt-1 space-y-1">
+            {repeats.map((repeat) => (
+              <li key={repeat.label}>
+                {repeat.label} is listed {repeat.count} times
+                {repeat.detail}.
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function money(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
@@ -1678,6 +1708,12 @@ export function CompareWorkspace() {
                       {filtered.length} of {plans.length} sample plans match
                       these filters.
                     </p>
+                    <div className="mt-3">
+                      <DrugCheckSummary
+                        count={medications.length}
+                        repeats={repeats}
+                      />
+                    </div>
                     <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <button
                         type="button"
