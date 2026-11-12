@@ -371,32 +371,16 @@ async function finishFromDrugs(session: ProofSession): Promise<ProofCaptureResul
   try {
     await returnToDrugList(page);
     const notAdded = new Set([...skipped, ...missing.map((drug) => drug.name)]);
-    const lastDrug = input.medications
+    const addedNames = input.medications
       .filter((medication) => !notAdded.has(medication.name))
-      .at(-1)?.name;
-    const drugList = lastDrug
-      ? page.getByText(lastDrug, { exact: false }).last()
-      : page.getByRole("heading", { name: /your drugs|drug list/i }).first();
-    if (await isVisible(drugList, 1500))
-      await drugList.scrollIntoViewIfNeeded().catch(() => undefined);
-    await saveProofShot(page, dir, "drugs.png", false);
+      .map((medication) => medication.name);
+    await saveDrugListShot(page, dir, addedNames);
     const doneAdding = page.getByRole("button", { name: /done adding drugs/i });
     const continueDrugs = page.getByRole("button", { name: /^continue$/i });
-    const leaveDrugs = await Promise.race([
-      doneAdding
-        .first()
-        .waitFor({ state: "visible", timeout: 5000 })
-        .then(() => doneAdding)
-        .catch(() => null),
-      continueDrugs
-        .first()
-        .waitFor({ state: "visible", timeout: 5000 })
-        .then(() => continueDrugs)
-        .catch(() => null),
-    ]);
-    const finishedDrugs = leaveDrugs
-      ? await clickIfVisible(page, leaveDrugs, 1000)
-      : false;
+    const leaveDrugs = (await doneAdding.first().isVisible().catch(() => false))
+      ? doneAdding
+      : continueDrugs;
+    const finishedDrugs = await clickIfVisible(page, leaveDrugs, 1200);
     if (!finishedDrugs) {
       return await stop(
         page,
@@ -642,16 +626,18 @@ export async function continueMedicareProof(proofId: string): Promise<ProofCaptu
 
 /** Leaves the add-drug search and opens the list of drugs already added. */
 async function returnToDrugList(page: Page) {
+  const onList = page
+    .getByRole("button", { name: /done adding drugs/i })
+    .or(page.getByRole("heading", { name: /your drugs|drug list/i }));
+  if (await onList.first().isVisible().catch(() => false)) return true;
   const back = page
     .getByRole("link", { name: /back to (?:your )?drug list/i })
     .or(page.getByRole("button", { name: /back to (?:your )?drug list/i }))
     .or(page.getByText(/back to (?:your )?drug list/i));
-  if (await clickIfVisible(page, back, 3000)) {
-    await page
-      .getByRole("button", { name: /done adding drugs/i })
-      .or(page.getByRole("heading", { name: /your drugs|drug list/i }))
+  if (await clickIfVisible(page, back, 800)) {
+    await onList
       .first()
-      .waitFor({ state: "visible", timeout: 5000 })
+      .waitFor({ state: "visible", timeout: 1500 })
       .catch(() => undefined);
     return true;
   }
@@ -1403,6 +1389,90 @@ function proofListImages() {
     { label: "Added drugs", file: "drugs.png" },
     { label: "Added pharmacies", file: "pharmacies.png" },
   ];
+}
+
+/** Captures the added-drug cards, from the first card through the last, and skips the rest of the page. */
+async function saveDrugListShot(page: Page, dir: string, names: string[]) {
+  const clip = await page
+    .evaluate((drugNames) => {
+      const needles = drugNames
+        .map((name) => name.trim().toLowerCase())
+        .filter((name) => name.length > 1);
+      if (needles.length === 0) return null;
+      const cards = needles.flatMap((needle) => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let start: HTMLElement | null = null;
+        let textNode = walker.nextNode();
+        while (textNode) {
+          const value = textNode.textContent?.toLowerCase() ?? "";
+          const parent = textNode.parentElement;
+          if (
+            value.includes(needle) &&
+            parent &&
+            !parent.closest("input, textarea, select, [role='combobox'], [role='listbox']")
+          ) {
+            const rect = parent.getBoundingClientRect();
+            if (rect.width >= 40 && rect.height >= 12) {
+              start = parent;
+              break;
+            }
+          }
+          textNode = walker.nextNode();
+        }
+        if (!start) return [];
+        let card = start;
+        let parent = card.parentElement;
+        while (parent && parent !== document.body) {
+          const text = parent.innerText?.toLowerCase() ?? "";
+          const sharesAnotherDrug = needles.some(
+            (name) => name !== needle && text.includes(name),
+          );
+          if (sharesAnotherDrug || parent.getBoundingClientRect().height > 340) break;
+          card = parent;
+          parent = parent.parentElement;
+        }
+        const rect = card.getBoundingClientRect();
+        if (rect.height < 8 || rect.width < 8) return [];
+        return [{
+          top: rect.top + window.scrollY,
+          bottom: rect.bottom + window.scrollY,
+          left: rect.left + window.scrollX,
+          right: rect.right + window.scrollX,
+        }];
+      });
+      if (cards.length === 0) return null;
+      const top = Math.min(...cards.map((card) => card.top));
+      const bottom = Math.max(...cards.map((card) => card.bottom));
+      const left = Math.min(...cards.map((card) => card.left));
+      const right = Math.max(...cards.map((card) => card.right));
+      const pad = 8;
+      return {
+        x: Math.max(0, left - pad),
+        y: Math.max(0, top - pad),
+        width: Math.max(1, right - left + pad * 2),
+        height: Math.max(1, bottom - top + pad * 2),
+      };
+    }, names)
+    .catch(() => null);
+  if (!clip) {
+    await saveProofShot(page, dir, "drugs.png", true);
+    return;
+  }
+  try {
+    const client = await page.context().newCDPSession(page);
+    try {
+      const shot = await client.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: true,
+        clip: { ...clip, scale: 1 },
+      });
+      await writeFile(path.join(dir, "drugs.png"), Buffer.from(shot.data, "base64"));
+    } finally {
+      await client.detach().catch(() => undefined);
+    }
+  } catch {
+    await saveProofShot(page, dir, "drugs.png", true);
+  }
 }
 
 async function saveProofShot(
