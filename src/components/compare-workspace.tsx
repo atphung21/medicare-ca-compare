@@ -42,6 +42,22 @@ const FORMS: { value: DosageForm; label: string }[] = [
   { value: "SUPPLY", label: "Diabetic supply" },
 ];
 
+function medicationNeedsUpdate(drug: DrugInput) {
+  if (drug.name.trim().length < 2) return true;
+  if (!drug.isSupply && !drug.isOtc && !drug.strength.trim()) return true;
+  if (
+    !drug.isOtc &&
+    (drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus)
+  ) {
+    return true;
+  }
+  return (
+    drug.resolutionStatus === "AMBIGUOUS_FORM" &&
+    !drug.rxcui &&
+    !drug.compareBothForms
+  );
+}
+
 function money(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
@@ -1294,11 +1310,12 @@ export function CompareWorkspace() {
                       suggestion.drugName.toLowerCase() !==
                       drug.name.toLowerCase(),
                   );
+                  const incomplete = medicationNeedsUpdate(drug);
                   return (
                     <li
                       key={drug.id}
                       id={`medication-${drug.id}`}
-                      className="scroll-mt-6 space-y-2 rounded-xl border border-[var(--line)] p-3"
+                      className={`scroll-mt-6 space-y-2 rounded-xl border p-3 ${incomplete ? "border-amber-300 bg-amber-50" : "border-[var(--line)]"}`}
                     >
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-medium text-stone-500">
