@@ -42,10 +42,6 @@ const FORMS: { value: DosageForm; label: string }[] = [
   { value: "SUPPLY", label: "Diabetic supply" },
 ];
 
-type SortKey = "total" | "drug" | "premium";
-type DeductibleFilter = "any" | "zero";
-type NetworkFilter = "any" | "preferred" | "all-in-network";
-
 function money(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
@@ -116,24 +112,11 @@ interface LisPayload {
   brandCopay: number;
 }
 
-function coversFormulary(plan: MedicarePlanComparison, supplyIds: Set<string>) {
-  const quote = plan.pharmacyQuotes[0];
-  return quote.drugBreakdowns.every(
-    (drug) => drug.tier !== null || supplyIds.has(drug.drugId),
-  );
-}
-
 function inNetwork(quote: PharmacyPlanQuote) {
   return quote.networkStatus !== "OUT_OF_NETWORK";
 }
 
-function comparisonQuote(plan: MedicarePlanComparison, pharmacyId: string) {
-  if (pharmacyId !== "cheapest") {
-    return (
-      plan.pharmacyQuotes.find((quote) => quote.pharmacyId === pharmacyId) ??
-      plan.pharmacyQuotes[0]
-    );
-  }
+function comparisonQuote(plan: MedicarePlanComparison) {
   const eligible = plan.pharmacyQuotes.filter(inNetwork);
   const pool = eligible.length ? eligible : plan.pharmacyQuotes;
   return pool.reduce((best, quote) =>
@@ -280,15 +263,6 @@ export function CompareWorkspace() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [planType, setPlanType] = useState<PlanCategory>("ALL");
-  const [carrier, setCarrier] = useState("ALL");
-  const [minStars, setMinStars] = useState(0);
-  const [maxPremium, setMaxPremium] = useState("");
-  const [deductible, setDeductible] = useState<DeductibleFilter>("any");
-  const [network, setNetwork] = useState<NetworkFilter>("any");
-  const [preferredPharmacyId, setPreferredPharmacyId] = useState("cvs");
-  const [coveredOnly, setCoveredOnly] = useState(true);
-  const [sortKey, setSortKey] = useState<SortKey>("total");
-  const [comparePharmacyId, setComparePharmacyId] = useState("cheapest");
   const [lisNote, setLisNote] = useState<LisPayload | null>(null);
   const [quotedMeds, setQuotedMeds] = useState<DrugInput[]>([]);
   const [visionMessage, setVisionMessage] = useState(
@@ -337,72 +311,16 @@ export function CompareWorkspace() {
   const retailCount = selectedPharmacies.filter(
     (pharmacy) => !pharmacy.isMailOrder,
   ).length;
-  const filterPharmacies =
-    plans[0]?.pharmacyQuotes.map((quote) => ({
-      id: quote.pharmacyId,
-      name: quote.pharmacyName,
-    })) ??
-    selectedPharmacies.map((pharmacy) => ({
-      id: pharmacy.id,
-      name: pharmacy.name,
-    }));
-
   const filtered = useMemo(() => {
-    const premiumCap = maxPremium === "" ? null : Number(maxPremium);
-    const supplyIds = new Set(
-      quotedMeds.filter((drug) => drug.isSupply || drug.isOtc).map((drug) => drug.id),
+    const rows = plans.filter(
+      (plan) => planType === "ALL" || plan.planType === planType,
     );
-    const rows = plans.filter((plan) => {
-      if (planType !== "ALL" && plan.planType !== planType) return false;
-      if (carrier !== "ALL" && plan.carrierName !== carrier) return false;
-      if (plan.starRating < minStars) return false;
-      if (
-        premiumCap !== null &&
-        !Number.isNaN(premiumCap) &&
-        plan.monthlyPremium > premiumCap
-      )
-        return false;
-      if (deductible === "zero" && plan.annualDrugDeductible !== 0)
-        return false;
-      if (coveredOnly && !coversFormulary(plan, supplyIds)) return false;
-      if (network === "preferred") {
-        const quote = plan.pharmacyQuotes.find(
-          (item) => item.pharmacyId === preferredPharmacyId,
-        );
-        if (!quote || quote.networkStatus !== "PREFERRED") return false;
-      }
-      if (
-        network === "all-in-network" &&
-        plan.pharmacyQuotes.some((quote) => !inNetwork(quote))
-      )
-        return false;
-      return true;
-    });
-    rows.sort((a, b) => {
-      const left = comparisonQuote(a, comparePharmacyId);
-      const right = comparisonQuote(b, comparePharmacyId);
-      if (sortKey === "premium") return a.monthlyPremium - b.monthlyPremium;
-      if (sortKey === "drug")
-        return left.annualDrugCostOop - right.annualDrugCostOop;
-      return left.totalAnnualCost - right.totalAnnualCost;
-    });
+    rows.sort(
+      (a, b) =>
+        comparisonQuote(a).totalAnnualCost - comparisonQuote(b).totalAnnualCost,
+    );
     return rows;
-  }, [
-    plans,
-    planType,
-    carrier,
-    minStars,
-    maxPremium,
-    deductible,
-    coveredOnly,
-    network,
-    preferredPharmacyId,
-    sortKey,
-    comparePharmacyId,
-    quotedMeds,
-  ]);
-
-  const carriers = [...new Set(plans.map((plan) => plan.carrierName))];
+  }, [plans, planType]);
 
   useEffect(() => {
     if (!/^\d{5}$/.test(zipCode)) return;
@@ -419,17 +337,11 @@ export function CompareWorkspace() {
         if (found.state === pharmacyState.current) return;
         pharmacyState.current = found.state;
         const defaults = defaultPharmacyIds(found.state);
-        const offered = new Set(pharmaciesForState(found.state).map((pharmacy) => pharmacy.id));
         setCatalogPharmacies(pharmaciesForState(found.state));
         setSelectedPharmacyIds((current) => {
           const customSelected = current.filter((id) => id.startsWith("custom-"));
           return [...defaults.filter((id) => id !== "mail-order"), ...customSelected, "mail-order"];
         });
-        setPreferredPharmacyId((current) =>
-          current.startsWith("custom-") || offered.has(current)
-            ? current
-            : (defaults.find((id) => id !== "mail-order") ?? "mail-order"),
-        );
       })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
@@ -463,15 +375,6 @@ export function CompareWorkspace() {
     setError("");
     setLoading(false);
     setPlanType("ALL");
-    setCarrier("ALL");
-    setMinStars(0);
-    setMaxPremium("");
-    setDeductible("any");
-    setNetwork("any");
-    setPreferredPharmacyId("cvs");
-    setCoveredOnly(true);
-    setSortKey("total");
-    setComparePharmacyId("cheapest");
     setLisNote(null);
     setQuotedMeds([]);
     setProofs({});
@@ -911,8 +814,6 @@ export function CompareWorkspace() {
           ? `${data.countyName}, ${county.state}`
           : data.countyName,
       });
-      setPreferredPharmacyId(selectedPharmacies[0]?.id ?? "cvs");
-      setComparePharmacyId("cheapest");
       } catch {
       setError("Could not reach the comparison service.");
     } finally {
@@ -940,7 +841,7 @@ export function CompareWorkspace() {
       ...pharmacyHeaders,
     ];
     const lines = filtered.map((plan) => {
-      const quote = comparisonQuote(plan, comparePharmacyId);
+      const quote = comparisonQuote(plan);
       const cells = [
         plan.planName,
         plan.carrierName,
@@ -1079,7 +980,7 @@ export function CompareWorkspace() {
   const splitTip =
     filtered.map((plan) => splitPharmacyTip(plan)).find(Boolean) ?? null;
   const formTips = filtered.flatMap((plan) =>
-    formularyFormTip(plan, comparisonQuote(plan, comparePharmacyId)),
+    formularyFormTip(plan, comparisonQuote(plan)),
   );
 
   return (
@@ -1120,7 +1021,7 @@ export function CompareWorkspace() {
       <form onSubmit={onSubmit} className="space-y-6">
         <fieldset className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm">
           <legend className="px-1 text-sm font-semibold">Location</legend>
-          <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,0.6fr)_minmax(0,0.8fr)_minmax(0,0.55fr)_minmax(16rem,1.6fr)_auto]">
+          <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,0.55fr)_minmax(0,0.75fr)_minmax(0,0.5fr)_minmax(0,0.9fr)_minmax(14rem,1.4fr)_auto]">
             <label className="block text-sm">
               ZIP code
               <input
@@ -1166,6 +1067,21 @@ export function CompareWorkspace() {
               >
                 <option value="2026">2026</option>
                 <option value="2027">2027</option>
+              </select>
+            </label>
+            <label className="block text-sm">
+              Plan type
+              <select
+                value={planType}
+                onChange={(event) =>
+                  setPlanType(event.target.value as PlanCategory)
+                }
+                className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
+              >
+                <option value="ALL">All plans</option>
+                <option value="MAPD">Medicare Advantage + drug</option>
+                <option value="PDP">Stand-alone Part D</option>
+                <option value="MEDIGAP">Medigap</option>
               </select>
             </label>
             <label className="block text-sm">
@@ -1288,143 +1204,6 @@ export function CompareWorkspace() {
                 />
               </label>
             ) : null}
-          </div>
-          <div className="mt-4 border-t border-[var(--line)] pt-3">
-            <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <label className="block text-sm">
-                Plan type
-                <select
-                  value={planType}
-                  onChange={(event) =>
-                    setPlanType(event.target.value as PlanCategory)
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="ALL">All plans</option>
-                  <option value="MAPD">Medicare Advantage + drug</option>
-                  <option value="PDP">Stand-alone Part D</option>
-                  <option value="MEDIGAP">Medigap</option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Carrier
-                <select
-                  value={carrier}
-                  onChange={(event) => setCarrier(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="ALL">All carriers</option>
-                  {carriers.map((name) => (
-                    <option key={name}>{name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm">
-                Minimum stars
-                <select
-                  value={minStars}
-                  onChange={(event) => setMinStars(Number(event.target.value))}
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value={0}>Any</option>
-                  <option value={3.5}>3.5</option>
-                  <option value={4}>4.0</option>
-                  <option value={4.5}>4.5</option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Max monthly premium
-                <input
-                  value={maxPremium}
-                  onChange={(event) => setMaxPremium(event.target.value)}
-                  inputMode="decimal"
-                  placeholder="Any"
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                />
-              </label>
-              <label className="block text-sm">
-                Deductible
-                <select
-                  value={deductible}
-                  onChange={(event) =>
-                    setDeductible(event.target.value as DeductibleFilter)
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="any">Any</option>
-                  <option value="zero">$0 only</option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Network
-                <select
-                  value={network}
-                  onChange={(event) =>
-                    setNetwork(event.target.value as NetworkFilter)
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="any">Any network status</option>
-                  <option value="preferred">Preferred at one pharmacy</option>
-                  <option value="all-in-network">
-                    Every selected pharmacy in network
-                  </option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Preferred pharmacy
-                <select
-                  value={preferredPharmacyId}
-                  onChange={(event) =>
-                    setPreferredPharmacyId(event.target.value)
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  {filterPharmacies.map((pharmacy) => (
-                    <option key={pharmacy.id} value={pharmacy.id}>
-                      {pharmacy.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-sm">
-                Sort and cost column
-                <select
-                  value={sortKey}
-                  onChange={(event) =>
-                    setSortKey(event.target.value as SortKey)
-                  }
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="total">Lowest total annual cost</option>
-                  <option value="drug">Lowest drug cost only</option>
-                  <option value="premium">Lowest monthly premium</option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Comparison pharmacy
-                <select
-                  value={comparePharmacyId}
-                  onChange={(event) => setComparePharmacyId(event.target.value)}
-                  className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
-                >
-                  <option value="cheapest">Cheapest in-network</option>
-                  {filterPharmacies.map((pharmacy) => (
-                    <option key={pharmacy.id} value={pharmacy.id}>
-                      {pharmacy.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-2 pb-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={coveredOnly}
-                  onChange={(event) => setCoveredOnly(event.target.checked)}
-                />
-                Hide plans missing a drug
-              </label>
-            </div>
           </div>
         </fieldset>
 
@@ -1841,47 +1620,9 @@ export function CompareWorkspace() {
           </aside>
           <div className="order-1 space-y-3 self-start rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm lg:sticky lg:top-4 lg:order-2 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
             <ChatDrugIntake key={formVersion} onChecked={acceptChecked} />
-            <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
-              Pill bottle or medication list
-              <input
-                type="file"
-                accept="image/*,application/pdf"
-                className="mt-2 block w-full text-xs"
-                disabled={extracting}
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void onExtract(file);
-                  event.target.value = "";
-                }}
-              />
-              <span className="mt-2 block">
-                {extracting ? "Reading the file…" : visionMessage}
-              </span>
-            </label>
-            <button
-              type="button"
-              className="text-sm font-medium text-[var(--accent)]"
-              onClick={() =>
-                setMedications((current) => [...current, newDrug()])
-              }
-            >
-              Add a drug
-            </button>
-            {error ? (
-              <p className="text-sm text-[var(--warn)]">{error}</p>
-            ) : null}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
-            >
-              {loading ? "Comparing…" : "Compare plans"}
-            </button>
-          </div>
-        </div>
         <section className="min-w-0 space-y-4">
             {plans.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-sm text-stone-600">
+              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-white p-4 text-sm text-stone-600">
                 Run a comparison, then capture Medicare.gov proof for the
                 current medication list.
               </div>
@@ -1926,7 +1667,7 @@ export function CompareWorkspace() {
                       filtered[0]
                         ? drugsVerified(
                             quotedMeds,
-                            comparisonQuote(filtered[0], comparePharmacyId),
+                            comparisonQuote(filtered[0]),
                           )
                         : false
                     }
@@ -2036,6 +1777,44 @@ export function CompareWorkspace() {
               </>
             )}
           </section>
+            <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
+              Pill bottle or medication list
+              <input
+                type="file"
+                accept="image/*,application/pdf"
+                className="mt-2 block w-full text-xs"
+                disabled={extracting}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void onExtract(file);
+                  event.target.value = "";
+                }}
+              />
+              <span className="mt-2 block">
+                {extracting ? "Reading the file…" : visionMessage}
+              </span>
+            </label>
+            <button
+              type="button"
+              className="text-sm font-medium text-[var(--accent)]"
+              onClick={() =>
+                setMedications((current) => [...current, newDrug()])
+              }
+            >
+              Add a drug
+            </button>
+            {error ? (
+              <p className="text-sm text-[var(--warn)]">{error}</p>
+            ) : null}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {loading ? "Comparing…" : "Compare plans"}
+            </button>
+          </div>
+        </div>
       </form>
       {openProof ? (
         <div
