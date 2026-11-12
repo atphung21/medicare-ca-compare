@@ -58,6 +58,33 @@ function medicationNeedsUpdate(drug: DrugInput) {
   );
 }
 
+function repeatedDrugs(medications: DrugInput[]) {
+  const groups = new Map<string, DrugInput[]>();
+  for (const drug of medications) {
+    const name = drug.name.trim().replace(/\s+/g, " ");
+    if (name.length < 2) continue;
+    const key = name.toLowerCase();
+    const group = groups.get(key) ?? [];
+    group.push(drug);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => {
+      const name = group[0].name.trim().replace(/\s+/g, " ");
+      const strengths = [
+        ...new Set(group.map((drug) => drug.strength.trim()).filter(Boolean)),
+      ];
+      const sameStrength = strengths.length <= 1;
+      return {
+        ids: group.map((drug) => drug.id),
+        count: group.length,
+        label: sameStrength && strengths[0] ? `${name} ${strengths[0]}` : name,
+        detail: sameStrength ? "" : ` (${strengths.join(" and ")})`,
+      };
+    });
+}
+
 function money(value: number) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
@@ -952,6 +979,8 @@ export function CompareWorkspace() {
   const formTips = filtered.flatMap((plan) =>
     formularyFormTip(plan, comparisonQuote(plan)),
   );
+  const repeats = repeatedDrugs(medications);
+  const repeatedIds = new Set(repeats.flatMap((repeat) => repeat.ids));
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8 pb-28 sm:px-6">
@@ -1189,7 +1218,15 @@ export function CompareWorkspace() {
               >
                 Add a Drug
               </button>
-              <h2 className="text-center text-sm font-semibold">Medications</h2>
+              <div className="text-center">
+                <h2 className="text-sm font-semibold">Medications</h2>
+                {medications.length > 0 ? (
+                  <p className="text-xs text-stone-600">
+                    {medications.length}{" "}
+                    {medications.length === 1 ? "drug" : "drugs"}
+                  </p>
+                ) : null}
+              </div>
               <div className="justify-self-end">
               {medications.length > 0 ? (
                 <button
@@ -1240,6 +1277,19 @@ export function CompareWorkspace() {
             {learnMessage ? (
               <p className="text-xs text-stone-600">{learnMessage}</p>
             ) : null}
+            {repeats.length > 0 ? (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                <p className="font-medium">Listed more than once</p>
+                <ul className="mt-1 space-y-1">
+                  {repeats.map((repeat) => (
+                    <li key={repeat.label}>
+                      {repeat.label} is listed {repeat.count} times
+                      {repeat.detail}.
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {medications.length === 0 ? (
               <p className="text-center text-sm text-stone-600">
                 Checked medications appear here.
@@ -1264,15 +1314,21 @@ export function CompareWorkspace() {
                       drug.name.toLowerCase(),
                   );
                   const incomplete = medicationNeedsUpdate(drug);
+                  const repeated = repeatedIds.has(drug.id);
                   return (
                     <li
                       key={drug.id}
                       id={`medication-${drug.id}`}
-                      className={`scroll-mt-6 space-y-2 rounded-xl border p-3 ${incomplete ? "border-amber-300 bg-amber-50" : "border-[var(--line)]"}`}
+                      className={`scroll-mt-6 space-y-2 rounded-xl border p-3 ${incomplete ? "border-amber-300 bg-amber-50" : repeated ? "border-amber-300" : "border-[var(--line)]"}`}
                     >
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-medium text-stone-500">
                           Drug {index + 1}
+                          {repeated ? (
+                            <span className="ml-2 text-amber-800">
+                              Listed more than once
+                            </span>
+                          ) : null}
                         </p>
                         <div className="flex gap-3">
                           {note?.rawLine ? (
