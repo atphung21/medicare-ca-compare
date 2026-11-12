@@ -54,9 +54,9 @@ export function ChatDrugIntake({
 
   return (
     <div className="space-y-3 rounded-xl border border-[var(--line)] bg-white p-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm font-medium">Paste a medication list</p>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             type="button"
             className="text-xs text-[var(--accent)] underline"
@@ -78,7 +78,7 @@ export function ChatDrugIntake({
         onChange={(event) => setText(event.target.value)}
         rows={5}
         placeholder="Type or paste medications in any format, such as: lisinoprill 10 once a day, metformin ER 500 2 tabs bid, dorzolamide 2% 1 drop both eyes bid, FreeStyle test strips 3x daily"
-        className="w-full rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+        className="field-sizing-content max-h-64 min-h-28 w-full overflow-y-auto rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
       />
       <button
         type="button"

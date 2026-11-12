@@ -271,6 +271,7 @@ export function CompareWorkspace() {
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
   const [customPharmacyName, setCustomPharmacyName] = useState("");
   const [providerText, setProviderText] = useState("");
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [plans, setPlans] = useState<MedicarePlanComparison[]>([]);
   const [context, setContext] = useState<{
     zipCode: string;
@@ -1257,22 +1258,36 @@ export function CompareWorkspace() {
             </div>
           </div>
           <div className="mt-4 border-t border-[var(--line)] pt-3">
-            <label className="block text-sm">
-              <span className="font-semibold">Providers</span>
-              <span className="mt-1 block text-xs font-normal text-stone-600">
-                Optional. One doctor per line, first and last name, such as Jane
-                Smith or Smith, Jane. Leave this blank and the proof skips
-                providers.
+            <button
+              type="button"
+              aria-expanded={providersOpen}
+              onClick={() => setProvidersOpen((open) => !open)}
+              className="text-sm font-semibold"
+            >
+              Providers
+              <span className="ml-2 font-normal text-stone-600">
+                {providerNames(providerText).length > 0
+                  ? `${providerNames(providerText).length} listed`
+                  : "Optional"}
               </span>
-              <textarea
-                value={providerText}
-                onChange={(event) => setProviderText(event.target.value)}
-                rows={3}
-                placeholder={"Jane Smith\nSmith, Jane"}
-                aria-label="Providers, one doctor per line, first and last name"
-                className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
-              />
-            </label>
+            </button>
+            {providersOpen ? (
+              <label className="mt-2 block text-sm">
+                <span className="block text-xs font-normal text-stone-600">
+                  One doctor per line, first and last name, such as Jane Smith
+                  or Smith, Jane. Leave this blank and the proof skips
+                  providers.
+                </span>
+                <textarea
+                  value={providerText}
+                  onChange={(event) => setProviderText(event.target.value)}
+                  rows={3}
+                  placeholder={"Jane Smith\nSmith, Jane"}
+                  aria-label="Providers, one doctor per line, first and last name"
+                  className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
+                />
+              </label>
+            ) : null}
           </div>
           <div className="mt-4 border-t border-[var(--line)] pt-3">
             <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1413,55 +1428,8 @@ export function CompareWorkspace() {
           </div>
         </fieldset>
 
-        <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm">
-          <fieldset className="space-y-3">
-            <legend className="text-sm font-semibold">Medications</legend>
-            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(16rem,0.7fr)]">
-              <ChatDrugIntake key={formVersion} onChecked={acceptChecked} />
-              <div className="space-y-3">
-                <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
-                  Pill bottle or medication list
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    className="mt-2 block w-full text-xs"
-                    disabled={extracting}
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void onExtract(file);
-                      event.target.value = "";
-                    }}
-                  />
-                  <span className="mt-2 block">
-                    {extracting ? "Reading the file…" : visionMessage}
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  className="text-sm font-medium text-[var(--accent)]"
-                  onClick={() =>
-                    setMedications((current) => [...current, newDrug()])
-                  }
-                >
-                  Add a drug
-                </button>
-                {error ? (
-                  <p className="text-sm text-[var(--warn)]">{error}</p>
-                ) : null}
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
-                >
-                  {loading ? "Comparing…" : "Compare plans"}
-                </button>
-              </div>
-            </div>
-          </fieldset>
-        </div>
-
         <div className="grid items-start gap-6 lg:grid-cols-2">
-          <aside className="min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
+          <aside className="order-2 min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 lg:order-1">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold">Medications</h2>
               {medications.length > 0 ? (
@@ -1871,7 +1839,47 @@ export function CompareWorkspace() {
               </ol>
             )}
           </aside>
-          <section className="min-w-0 space-y-4">
+          <div className="order-1 space-y-3 self-start rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm lg:sticky lg:top-4 lg:order-2 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+            <ChatDrugIntake key={formVersion} onChecked={acceptChecked} />
+            <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
+              Pill bottle or medication list
+              <input
+                type="file"
+                accept="image/*,application/pdf"
+                className="mt-2 block w-full text-xs"
+                disabled={extracting}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void onExtract(file);
+                  event.target.value = "";
+                }}
+              />
+              <span className="mt-2 block">
+                {extracting ? "Reading the file…" : visionMessage}
+              </span>
+            </label>
+            <button
+              type="button"
+              className="text-sm font-medium text-[var(--accent)]"
+              onClick={() =>
+                setMedications((current) => [...current, newDrug()])
+              }
+            >
+              Add a drug
+            </button>
+            {error ? (
+              <p className="text-sm text-[var(--warn)]">{error}</p>
+            ) : null}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {loading ? "Comparing…" : "Compare plans"}
+            </button>
+          </div>
+        </div>
+        <section className="min-w-0 space-y-4">
             {plans.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--card)] p-8 text-sm text-stone-600">
                 Run a comparison, then capture Medicare.gov proof for the
@@ -2028,7 +2036,6 @@ export function CompareWorkspace() {
               </>
             )}
           </section>
-        </div>
       </form>
       {openProof ? (
         <div
