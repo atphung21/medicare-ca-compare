@@ -722,6 +722,14 @@ export function CompareWorkspace() {
     );
   }
 
+  function showMedicationError(drugId: string, message: string) {
+    setError(message);
+    document.getElementById(`medication-${drugId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError("");
@@ -737,14 +745,14 @@ export function CompareWorkspace() {
     }
     const missingName = medications.find((drug) => drug.name.trim().length < 2);
     if (missingName) {
-      setError("Each medication needs a name.");
+      showMedicationError(missingName.id, "Each medication needs a name.");
       return;
     }
     const missingStrength = medications.find(
       (drug) => !drug.isSupply && !drug.isOtc && !drug.strength.trim(),
     );
     if (missingStrength) {
-      setError(`Pick a Strength for ${missingStrength.name}.`);
+      showMedicationError(missingStrength.id, `Pick a Strength for ${missingStrength.name}.`);
       return;
     }
     const unresolved = medications.find(
@@ -753,7 +761,7 @@ export function CompareWorkspace() {
         (drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus),
     );
     if (unresolved) {
-      setError(`Pick a Form for ${unresolved.name} before comparing.`);
+      showMedicationError(unresolved.id, `Pick a Form for ${unresolved.name} before comparing.`);
       return;
     }
     const ambiguous = medications.find(
@@ -763,7 +771,8 @@ export function CompareWorkspace() {
         !drug.compareBothForms,
     );
     if (ambiguous) {
-      setError(
+      showMedicationError(
+        ambiguous.id,
         `${ambiguous.name} has two forms. Pick one, or turn on Test Both Forms.`,
       );
       return;
@@ -1288,7 +1297,8 @@ export function CompareWorkspace() {
                   return (
                     <li
                       key={drug.id}
-                      className="space-y-2 rounded-xl border border-[var(--line)] p-3"
+                      id={`medication-${drug.id}`}
+                      className="scroll-mt-6 space-y-2 rounded-xl border border-[var(--line)] p-3"
                     >
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-medium text-stone-500">
