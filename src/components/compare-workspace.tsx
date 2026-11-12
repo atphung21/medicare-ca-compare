@@ -227,7 +227,7 @@ function proofShots(data: {
   return data.imageFile
     ? [
         {
-          label: "Medicare.gov proof",
+          label: "Medicare.gov Proof",
           src: `/api/medicare/proof/${data.proofId}/${data.imageFile}`,
         },
       ]
@@ -744,7 +744,7 @@ export function CompareWorkspace() {
       (drug) => !drug.isSupply && !drug.isOtc && !drug.strength.trim(),
     );
     if (missingStrength) {
-      setError(`Pick a strength for ${missingStrength.name}.`);
+      setError(`Pick a Strength for ${missingStrength.name}.`);
       return;
     }
     const unresolved = medications.find(
@@ -753,7 +753,7 @@ export function CompareWorkspace() {
         (drug.resolutionStatus === "UNRESOLVED" || !drug.resolutionStatus),
     );
     if (unresolved) {
-      setError(`Pick a form for ${unresolved.name} before comparing.`);
+      setError(`Pick a Form for ${unresolved.name} before comparing.`);
       return;
     }
     const ambiguous = medications.find(
@@ -764,7 +764,7 @@ export function CompareWorkspace() {
     );
     if (ambiguous) {
       setError(
-        `${ambiguous.name} has two forms. Pick one, or turn on Test both forms.`,
+        `${ambiguous.name} has two forms. Pick one, or turn on Test Both Forms.`,
       );
       return;
     }
@@ -985,23 +985,8 @@ export function CompareWorkspace() {
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <header className="max-w-3xl">
-          <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
-            Licensed agent planning tool
-          </p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
-            Medicare drug comparison
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-stone-700">
-            These figures are sample planning estimates, not a beneficiary
-            quote. Confirm the final one or two plans in Medicare.gov or the
-            agency quoting tool. Annual out-of-pocket drug costs in this sample
-            stop at the {money(partDCap(contractYear))} Part D cap for{" "}
-            {contractYear}.
-          </p>
-        </header>
-        <div className="flex gap-2">
+      <div className="mb-6 space-y-4">
+        <div className="flex justify-end gap-2">
           <Link
             href="/assistant"
             className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
@@ -1013,17 +998,32 @@ export function CompareWorkspace() {
             onClick={resetPage}
             className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
           >
-            Reset form
+            Reset Form
           </button>
         </div>
+        <header className="mx-auto max-w-3xl text-center">
+          <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
+            Licensed Agent Planning Tool
+          </p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
+            Medicare Drug Comparison
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-stone-700">
+            These figures are sample planning estimates, not a beneficiary
+            quote. Confirm the final one or two plans in Medicare.gov or the
+            agency quoting tool. Annual out-of-pocket drug costs in this sample
+            stop at the {money(partDCap(contractYear))} Part D cap for{" "}
+            {contractYear}.
+          </p>
+        </header>
       </div>
 
       <form onSubmit={onSubmit} className="space-y-6">
         <fieldset className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm">
-          <legend className="px-1 text-sm font-semibold">Location</legend>
+          <legend className="mx-auto px-1 text-center text-sm font-semibold">Location</legend>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,0.55fr)_minmax(0,0.75fr)_minmax(0,0.5fr)_minmax(0,0.9fr)_minmax(14rem,1.4fr)_auto]">
             <label className="block text-sm">
-              ZIP code
+              ZIP Code
               <input
                 value={zipCode}
                 onChange={(event) =>
@@ -1047,7 +1047,7 @@ export function CompareWorkspace() {
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               >
                 <option value="">
-                  {zipCode.length === 5 ? "Select a county" : "Enter a ZIP code first"}
+                  {zipCode.length === 5 ? "Select a County" : "Enter a ZIP code first"}
                 </option>
                 {countyChoices.map((county) => (
                   <option key={county.fips} value={county.fips}>
@@ -1057,7 +1057,7 @@ export function CompareWorkspace() {
               </select>
             </label>
             <label className="block text-sm">
-              Contract year
+              Contract Year
               <select
                 value={contractYear}
                 onChange={(event) =>
@@ -1070,7 +1070,7 @@ export function CompareWorkspace() {
               </select>
             </label>
             <label className="block text-sm">
-              Plan type
+              Plan Type
               <select
                 value={planType}
                 onChange={(event) =>
@@ -1078,9 +1078,9 @@ export function CompareWorkspace() {
                 }
                 className="mt-1 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2"
               >
-                <option value="ALL">All plans</option>
-                <option value="MAPD">Medicare Advantage + drug</option>
-                <option value="PDP">Stand-alone Part D</option>
+                <option value="ALL">All Plans</option>
+                <option value="MAPD">Medicare Advantage + Drug</option>
+                <option value="PDP">Stand-Alone Part D</option>
                 <option value="MEDIGAP">Medigap</option>
               </select>
             </label>
@@ -1108,7 +1108,7 @@ export function CompareWorkspace() {
                 checked={showMppp}
                 onChange={(event) => setShowMppp(event.target.checked)}
               />
-              Show MPPP monthly smoothed payment
+              Show MPPP Monthly Smoothed Payment
             </label>
           </div>
           {zipCode === "91361" ? (
@@ -1118,8 +1118,8 @@ export function CompareWorkspace() {
             </p>
           ) : null}
           <div className="mt-4 border-t border-[var(--line)] pt-3">
-            <p className="text-sm font-semibold">Pharmacies</p>
-            <p className="mt-1 text-xs text-stone-600">
+            <p className="text-center text-sm font-semibold">Pharmacies</p>
+            <p className="mt-1 text-center text-xs text-stone-600">
               Up to five retail pharmacies, plus mail order.
               {location?.state ? ` Big chains in ${location.state}.` : ""}{" "}
               {retailCount} retail selected.
@@ -1159,8 +1159,8 @@ export function CompareWorkspace() {
                       addCustomPharmacy();
                     }
                   }}
-                  placeholder="Pharmacy name"
-                  aria-label="Custom pharmacy name"
+                  placeholder="Pharmacy Name"
+                  aria-label="Custom Pharmacy Name"
                   className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
                 />
                 <button
@@ -1168,7 +1168,7 @@ export function CompareWorkspace() {
                   onClick={addCustomPharmacy}
                   className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
                 >
-                  Add pharmacy
+                  Add Pharmacy
                 </button>
               </div>
             </div>
@@ -1178,7 +1178,7 @@ export function CompareWorkspace() {
               type="button"
               aria-expanded={providersOpen}
               onClick={() => setProvidersOpen((open) => !open)}
-              className="text-sm font-semibold"
+              className="w-full text-center text-sm font-semibold"
             >
               Providers
               <span className="ml-2 font-normal text-stone-600">
@@ -1189,7 +1189,7 @@ export function CompareWorkspace() {
             </button>
             {providersOpen ? (
               <label className="mt-2 block text-sm">
-                <span className="block text-xs font-normal text-stone-600">
+                <span className="mt-2 block text-center text-xs font-normal text-stone-600">
                   One doctor per line, first and last name, such as Jane Smith
                   or Smith, Jane. Leave this blank and the proof skips
                   providers.
@@ -1209,8 +1209,10 @@ export function CompareWorkspace() {
 
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <aside className="order-2 min-w-0 space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 lg:order-1">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold">Medications</h2>
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+              <span />
+              <h2 className="text-center text-sm font-semibold">Medications</h2>
+              <div className="justify-self-end">
               {medications.length > 0 ? (
                 <button
                   type="button"
@@ -1224,9 +1226,12 @@ export function CompareWorkspace() {
                     setDuplicate(null);
                   }}
                 >
-                  Remove all
+                  Remove All
                 </button>
-              ) : null}
+              ) : (
+                <span />
+              )}
+              </div>
             </div>
             {duplicate ? (
               <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
@@ -1258,7 +1263,7 @@ export function CompareWorkspace() {
               <p className="text-xs text-stone-600">{learnMessage}</p>
             ) : null}
             {medications.length === 0 ? (
-              <p className="text-sm text-stone-600">
+              <p className="text-center text-sm text-stone-600">
                 Checked medications appear here.
               </p>
             ) : (
@@ -1302,7 +1307,7 @@ export function CompareWorkspace() {
                                 )
                               }
                             >
-                              Fix this read
+                              Fix This Read
                             </button>
                           ) : null}
                           {!drug.isSupply && drug.name.trim() ? (
@@ -1440,8 +1445,8 @@ export function CompareWorkspace() {
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-amber-800">
                             {note?.unlistedStrength
-                              ? `${note.unlistedStrength} is not a listed strength. Pick a strength`
-                              : "Pick a strength"}
+                              ? `${note.unlistedStrength} is not a listed strength. Pick a Strength`
+                              : "Pick a Strength"}
                           </p>
                           {strengthChoices.length > 3 ? (
                             <select
@@ -1457,7 +1462,7 @@ export function CompareWorkspace() {
                               }}
                               className="w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
                             >
-                              <option value="">Pick a strength</option>
+                              <option value="">Pick a Strength</option>
                               {strengthChoices.map((choice) => (
                                 <option key={choice} value={choice}>
                                   {choice}
@@ -1609,7 +1614,7 @@ export function CompareWorkspace() {
                               })
                             }
                           />
-                          Brand only
+                          Brand Only
                         </label>
                       ) : null}
                     </li>
@@ -1622,24 +1627,22 @@ export function CompareWorkspace() {
             <ChatDrugIntake key={formVersion} onChecked={acceptChecked} />
         <section className="min-w-0 space-y-4">
             {plans.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-white p-4 text-sm text-stone-600">
+              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-white p-4 text-center text-sm text-stone-600">
                 Run a comparison, then capture Medicare.gov proof for the
                 current medication list.
               </div>
             ) : (
               <>
                 <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <h2 className="text-lg font-semibold">
-                        {context?.countyName} · {context?.zipCode}
-                      </h2>
-                      <p className="text-sm text-stone-600">
-                        {filtered.length} of {plans.length} sample plans match
-                        these filters.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
+                  <div className="text-center">
+                    <h2 className="text-lg font-semibold">
+                      {context?.countyName} · {context?.zipCode}
+                    </h2>
+                    <p className="text-sm text-stone-600">
+                      {filtered.length} of {plans.length} sample plans match
+                      these filters.
+                    </p>
+                    <div className="mt-3 flex flex-wrap justify-center gap-2">
                       <button
                         type="button"
                         onClick={() => void captureProof()}
@@ -1649,15 +1652,15 @@ export function CompareWorkspace() {
                         {proofLoading
                           ? "Opening Medicare.gov…"
                           : proof && !proof.error
-                            ? "View Medicare.gov proof"
-                            : "Capture Medicare.gov proof"}
+                            ? "View Medicare.gov Proof"
+                            : "Capture Medicare.gov Proof"}
                       </button>
                       <button
                         type="button"
                         onClick={exportCsv}
                         className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-medium"
                       >
-                        Export filtered CSV
+                        Export Filtered CSV
                       </button>
                     </div>
                   </div>
@@ -1712,7 +1715,7 @@ export function CompareWorkspace() {
                   {proof && proof.missing.length > 0 ? (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
                       <p className="font-medium">
-                        Not found automatically ({proof.missing.length}).
+                        Not Found Automatically ({proof.missing.length}).
                       </p>
                       <ul className="mt-2 space-y-2">
                         {proof.missing.map((drug, index) => (
@@ -1749,7 +1752,7 @@ export function CompareWorkspace() {
                       className="mr-4 mt-2 inline-block text-sm text-[var(--accent)] underline"
                       onClick={() => setOpenProofKey(proofKey)}
                     >
-                      View screenshots
+                      View Screenshots
                     </button>
                   ) : null}
                   {proof?.url ? (
@@ -1759,7 +1762,7 @@ export function CompareWorkspace() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Open this Medicare.gov page
+                      Open This Medicare.gov Page
                     </a>
                   ) : null}
                   {proof?.pdf && proof.id ? (
@@ -1778,7 +1781,7 @@ export function CompareWorkspace() {
             )}
           </section>
             <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
-              Pill bottle or medication list
+              Pill Bottle or Medication List
               <input
                 type="file"
                 accept="image/*,application/pdf"
@@ -1801,7 +1804,7 @@ export function CompareWorkspace() {
                 setMedications((current) => [...current, newDrug()])
               }
             >
-              Add a drug
+              Add a Drug
             </button>
             {error ? (
               <p className="text-sm text-[var(--warn)]">{error}</p>
@@ -1811,7 +1814,7 @@ export function CompareWorkspace() {
               disabled={loading}
               className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
             >
-              {loading ? "Comparing…" : "Compare plans"}
+              {loading ? "Comparing…" : "Compare Plans"}
             </button>
           </div>
         </div>
@@ -1820,20 +1823,20 @@ export function CompareWorkspace() {
         <div
           className="fixed inset-0 z-20 flex items-center justify-center bg-stone-900/50 p-4"
           role="dialog"
-          aria-label="Medicare.gov proof"
+          aria-label="Medicare.gov Proof"
         >
           <div className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl bg-white p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">Medicare.gov proof</h2>
+            <div className="mb-3 text-center">
+              <h2 className="text-lg font-semibold">Medicare.gov Proof</h2>
               <button
                 type="button"
-                className="text-sm underline"
+                className="mt-1 text-sm underline"
                 onClick={() => setOpenProofKey(null)}
               >
                 Close
               </button>
             </div>
-            <p className="mb-3 text-xs text-stone-600">
+            <p className="mb-3 text-center text-xs text-stone-600">
               These images are the public pages the browser reached. They are
               not a beneficiary quote.
             </p>
@@ -1886,16 +1889,16 @@ function FormResolution({
     if (!drug.rxcui) return null;
     return (
       <p className="text-xs text-emerald-800">
-        Form confirmed.{drug.dosageFormLabel ? ` ${drug.dosageFormLabel}.` : ""}
+        Form Confirmed.{drug.dosageFormLabel ? ` ${drug.dosageFormLabel}.` : ""}
       </p>
     );
   }
   return (
     <div className="space-y-2">
       {drug.rxcui ? (
-        <p className="text-xs text-emerald-800">Form confirmed.</p>
+        <p className="text-xs text-emerald-800">Form Confirmed.</p>
       ) : (
-        <p className="text-xs font-medium text-amber-800">Pick a form</p>
+        <p className="text-xs font-medium text-amber-800">Pick a Form</p>
       )}
       {options.length > 3 ? (
         <select
@@ -1911,7 +1914,7 @@ function FormResolution({
           }}
           className="w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm"
         >
-          <option value="">Pick a form</option>
+          <option value="">Pick a Form</option>
           {options.map((variant) => (
             <option key={variant.rxcui} value={variant.rxcui}>
               {variant.dosageForm}
@@ -1938,7 +1941,7 @@ function FormResolution({
           checked={Boolean(drug.compareBothForms)}
           onChange={(event) => onCompareBoth(event.target.checked)}
         />
-        Test both forms
+        Test Both Forms
       </label>
     </div>
   );
@@ -1957,7 +1960,7 @@ function AuditBanner({
       <p
         className={`text-xs font-semibold ${verified ? "text-emerald-800" : "text-amber-800"}`}
       >
-        {verified ? "Verified match" : "Dosage review needed"}
+        {verified ? "Verified Match" : "Dosage Review Needed"}
       </p>
       <ul className="mt-2 space-y-1 text-xs text-stone-700">
         {medications.map((drug) => (

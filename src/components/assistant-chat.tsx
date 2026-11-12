@@ -109,26 +109,26 @@ export function AssistantChat() {
   return (
     <main className="mx-auto grid max-w-[1200px] gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
       <section className="flex min-h-[80vh] flex-col">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <header>
-            <p className="text-sm font-medium tracking-wide text-[var(--accent)]">Licensed agent planning tool</p>
-            <h1 className="mt-1 text-3xl font-semibold tracking-tight">Medicare assistant</h1>
-            <p className="mt-2 text-sm text-stone-700">
-              Paste a medication list, give a ZIP code, ask questions, or teach it how you work.
-            </p>
-          </header>
-          <div className="flex gap-2">
+        <div className="mb-4 space-y-3">
+          <div className="flex justify-end gap-2">
             <Link href="/" className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium">
-              Comparison form
+              Comparison Form
             </Link>
             <button
               type="button"
               onClick={newChat}
               className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
             >
-              New chat
+              New Chat
             </button>
           </div>
+          <header className="text-center">
+            <p className="text-sm font-medium tracking-wide text-[var(--accent)]">Licensed Agent Planning Tool</p>
+            <h1 className="mt-1 text-3xl font-semibold tracking-tight">Medicare Assistant</h1>
+            <p className="mx-auto mt-2 max-w-2xl text-sm text-stone-700">
+              Paste a medication list, give a ZIP code, ask questions, or teach it how you work.
+            </p>
+          </header>
         </div>
 
         <div className="flex-1 space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm">
@@ -289,13 +289,13 @@ function SessionPanel({ session, memory }: { session: AssistantSession; memory: 
       <div>
         <p className="font-semibold">Location</p>
         <p className="text-stone-700">
-          {session.county ? `${session.county.name}, ${session.county.state} · ${session.zipCode}` : "Not set"}
+          {session.county ? `${session.county.name}, ${session.county.state} · ${session.zipCode}` : "Not Set"}
         </p>
       </div>
       <div>
         <p className="font-semibold">Medications</p>
         {session.medications.length === 0 ? (
-          <p className="text-stone-700">None yet</p>
+          <p className="text-stone-700">None Yet</p>
         ) : (
           <ol className="mt-1 list-decimal space-y-1 pl-5 text-stone-700">
             {session.medications.map((item) => (
@@ -328,7 +328,7 @@ function TeamMemory({ memory }: { memory: SyncStatus }) {
   const synced = memory.lastPushedAt && memory.lastPushedAt > (memory.lastPulledAt ?? "") ? memory.lastPushedAt : memory.lastPulledAt;
   return (
     <div>
-      <p className="font-semibold">Team memory</p>
+      <p className="font-semibold">Team Memory</p>
       <p className="text-stone-700">
         {rules} rule{rules === 1 ? "" : "s"} · {phrases} phrase{phrases === 1 ? "" : "s"} · {learnedLines} learned
         medication fix{learnedLines === 1 ? "" : "es"} · {openRequests} open request

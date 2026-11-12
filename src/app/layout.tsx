@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Medicare drug comparison",
+  title: "Medicare Drug Comparison",
   description:
     "Internal planning estimates for Medicare Advantage and Part D drug costs across pharmacies in any US ZIP code.",
 };

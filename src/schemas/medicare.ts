@@ -159,7 +159,7 @@ function retailChain(id: string, name: string, chain = name): PharmacyInput {
 
 const MAIL_ORDER: PharmacyInput = {
   id: "mail-order",
-  name: "Plan mail order",
+  name: "Plan Mail Order",
   chain: "Mail Order",
   address: "Home delivery",
   isMailOrder: true,

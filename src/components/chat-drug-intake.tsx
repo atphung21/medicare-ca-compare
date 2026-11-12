@@ -54,22 +54,22 @@ export function ChatDrugIntake({
 
   return (
     <div className="space-y-3 rounded-xl border border-[var(--line)] bg-white p-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm font-medium">Paste a medication list</p>
-        <div className="flex flex-wrap gap-3">
+      <div className="space-y-2 text-center">
+        <p className="text-sm font-medium">Paste a Medication List</p>
+        <div className="flex flex-wrap justify-center gap-3">
           <button
             type="button"
             className="text-xs text-[var(--accent)] underline"
             onClick={() => setText(SAMPLE)}
           >
-            Use sample list
+            Use Sample List
           </button>
           <button
             type="button"
             className="text-xs text-[var(--accent)] underline"
             onClick={() => setText(MISSPELLED_SAMPLE)}
           >
-            Test misspelled sample
+            Test Misspelled Sample
           </button>
         </div>
       </div>
@@ -84,9 +84,9 @@ export function ChatDrugIntake({
         type="button"
         disabled={busy || text.trim().length === 0}
         onClick={() => void checkMedications()}
-        className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+        className="mx-auto block rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
       >
-        {busy ? "Checking…" : "Check medications"}
+        {busy ? "Checking…" : "Check Medications"}
       </button>
       {message ? <p className="text-xs text-[var(--warn)]">{message}</p> : null}
     </div>
