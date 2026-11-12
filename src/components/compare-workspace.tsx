@@ -305,6 +305,8 @@ export function CompareWorkspace() {
   const [zipCode, setZipCode] = useState("92704");
   const [countyFips, setCountyFips] = useState("06059");
   const [contractYear, setContractYear] = useState<"2026" | "2027">("2027");
+  const [confirm2026, setConfirm2026] = useState(false);
+  const allow2026Compare = useRef(false);
   const [lisLevel, setLisLevel] = useState<LisLevel>("LIS_NONE");
   const [showMppp, setShowMppp] = useState(false);
   const [medications, setMedications] = useState<DrugInput[]>([]);
@@ -426,6 +428,8 @@ export function CompareWorkspace() {
     setLocation(null);
     setLocationError("");
     setContractYear("2027");
+    setConfirm2026(false);
+    allow2026Compare.current = false;
     setLisLevel("LIS_NONE");
     setShowMppp(false);
     setMedications([]);
@@ -797,8 +801,20 @@ export function CompareWorkspace() {
     });
   }
 
+  function confirm2026Compare() {
+    allow2026Compare.current = true;
+    setConfirm2026(false);
+    const form = document.getElementById("compare-form");
+    if (form instanceof HTMLFormElement) form.requestSubmit();
+  }
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    if (contractYear === "2026" && !allow2026Compare.current) {
+      setConfirm2026(true);
+      return;
+    }
+    allow2026Compare.current = false;
     setError("");
     const county =
       counties.find((item) => item.fips === countyFips) ?? counties[0];
@@ -1047,7 +1063,7 @@ export function CompareWorkspace() {
         </header>
       </div>
 
-      <form onSubmit={onSubmit} className="space-y-6">
+      <form id="compare-form" onSubmit={onSubmit} className="space-y-6">
         <fieldset className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4 shadow-sm">
           <legend className="mx-auto px-1 text-center text-sm font-semibold">Location</legend>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,0.55fr)_minmax(0,0.75fr)_minmax(0,0.5fr)_minmax(0,0.9fr)_minmax(14rem,1.4fr)_auto]">
@@ -1888,6 +1904,35 @@ export function CompareWorkspace() {
             </button>
         </div>
       </form>
+      {confirm2026 ? (
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-stone-900/50 p-4"
+          role="dialog"
+          aria-labelledby="confirm-2026-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 text-center shadow-lg">
+            <p id="confirm-2026-title" className="text-sm leading-6 text-stone-800">
+              Are you sure you want to do this? This is is for 2026 lol.
+            </p>
+            <div className="mt-4 flex justify-center gap-2">
+              <button
+                type="button"
+                className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium"
+                onClick={() => setConfirm2026(false)}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
+                onClick={confirm2026Compare}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {openProof ? (
         <div
           className="fixed inset-0 z-20 flex items-center justify-center bg-stone-900/50 p-4"
