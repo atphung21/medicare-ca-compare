@@ -338,6 +338,7 @@ export function CompareWorkspace() {
     "Checking pill-bottle intake…",
   );
   const [extracting, setExtracting] = useState(false);
+  const [photoDrag, setPhotoDrag] = useState(false);
   const [proofs, setProofs] = useState<Record<string, ProofResult>>({});
   const [proofLoading, setProofLoading] = useState(false);
   const [openProofKey, setOpenProofKey] = useState<string | null>(null);
@@ -911,6 +912,16 @@ export function CompareWorkspace() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function dropPhoto(file: File | undefined) {
+    if (!file || extracting) return;
+    const allowed = file.type.startsWith("image/") || file.type === "application/pdf";
+    if (!allowed) {
+      setError("Drop a photo or a PDF.");
+      return;
+    }
+    void onExtract(file);
   }
 
   async function onExtract(file: File) {
@@ -1861,8 +1872,34 @@ export function CompareWorkspace() {
               </>
             )}
           </section>
-            <label className="block rounded-xl border border-dashed border-[var(--line)] p-3 text-xs text-stone-600">
+            <label
+              className={`block rounded-xl border border-dashed p-3 text-xs text-stone-600 ${
+                photoDrag
+                  ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                  : "border-[var(--line)]"
+              }`}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                if (!extracting) setPhotoDrag(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!extracting) setPhotoDrag(true);
+              }}
+              onDragLeave={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                setPhotoDrag(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setPhotoDrag(false);
+                dropPhoto(event.dataTransfer?.files?.[0]);
+              }}
+            >
               Pill Bottle or Medication List
+              <span className="mt-1 block text-stone-500">
+                Drag a photo or PDF here, or choose a file.
+              </span>
               <input
                 type="file"
                 accept="image/*,application/pdf"
