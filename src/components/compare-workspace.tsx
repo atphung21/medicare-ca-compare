@@ -302,8 +302,8 @@ function proofShots(data: {
 }
 
 export function CompareWorkspace() {
-  const [zipCode, setZipCode] = useState("92704");
-  const [countyFips, setCountyFips] = useState("06059");
+  const [zipCode, setZipCode] = useState("");
+  const [countyFips, setCountyFips] = useState("");
   const [contractYear, setContractYear] = useState<"2026" | "2027">("2027");
   const [confirm2026, setConfirm2026] = useState(false);
   const allow2026Compare = useRef(false);
@@ -314,11 +314,11 @@ export function CompareWorkspace() {
     Record<string, ResolvedVariant[]>
   >({});
   const [catalogPharmacies, setCatalogPharmacies] = useState<PharmacyInput[]>(() =>
-    pharmaciesForState("CA"),
+    pharmaciesForState(""),
   );
-  const pharmacyState = useRef("CA");
+  const pharmacyState = useRef("");
   const [selectedPharmacyIds, setSelectedPharmacyIds] = useState<string[]>(() =>
-    defaultPharmacyIds("CA"),
+    defaultPharmacyIds(""),
   );
   const [customPharmacies, setCustomPharmacies] = useState<PharmacyInput[]>([]);
   const [customPharmacyName, setCustomPharmacyName] = useState("");
@@ -1030,22 +1030,22 @@ export function CompareWorkspace() {
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-8 pb-28 sm:px-6">
-      <div className="mb-6 space-y-4">
-        <div className="flex justify-end pr-36">
-          <Link
-            href="/assistant"
-            className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
-          >
-            Assistant
-          </Link>
-        </div>
+      <div className="fixed top-4 right-4 z-10 flex gap-2">
+        <Link
+          href="/assistant"
+          className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
+        >
+          Assistant
+        </Link>
         <button
           type="button"
           onClick={resetPage}
-          className="fixed top-4 right-4 z-10 rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium shadow-sm"
+          className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-medium shadow-sm"
         >
           Reset Form
         </button>
+      </div>
+      <div className="mb-6">
         <header className="mx-auto max-w-3xl text-center">
           <p className="text-sm font-medium tracking-wide text-[var(--accent)]">
             Licensed Agent Planning Tool
